@@ -43,7 +43,9 @@ class PrototypeLayer(nn.Module):
         
         # Learnable prototype vectors
         self.prototypes = nn.Parameter(torch.randn(n_prototypes, prototype_dim))
-        nn.init.xavier_uniform_(self.prototypes)
+        # Initialize with std=1.0 to match encoder output (LayerNorm) scale
+        # This prevents vanishing similarities (exp(-large_dist)) at initialization
+        nn.init.normal_(self.prototypes, std=1.0)
         
         # Learnable sigma for RBF (allows model to learn optimal temperature)
         if similarity_type == 'rbf':
@@ -203,7 +205,11 @@ class ClassificationHead(nn.Module):
         
         # Raw weights (will be transformed to non-negative)
         self.weight_raw = nn.Parameter(torch.randn(n_prototypes, n_classes))
-        self.bias = nn.Parameter(torch.zeros(n_classes))
+        
+        # Bias initialization to -2.0 (approx log(0.14/0.86)) to account for class imbalance
+        # This is CRITICAL because weight_raw -> softplus -> positive. 
+        # Without negative bias, logits are always positive -> prob > 0.5 -> predicts Class 1 always.
+        self.bias = nn.Parameter(torch.ones(n_classes) * -2.0)
         
         # Initialize weights
         nn.init.xavier_uniform_(self.weight_raw)

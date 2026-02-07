@@ -35,11 +35,11 @@ def parse_args():
                         help='Path to test data CSV')
     
     # Model architecture
-    parser.add_argument('--d_model', type=int, default=64,
+    parser.add_argument('--d_model', type=int, default=256,
                         help='Hidden dimension for transformer')
-    parser.add_argument('--n_heads', type=int, default=4,
+    parser.add_argument('--n_heads', type=int, default=8,
                         help='Number of attention heads')
-    parser.add_argument('--n_layers', type=int, default=3,
+    parser.add_argument('--n_layers', type=int, default=6,
                         help='Number of transformer layers')
     parser.add_argument('--n_prototypes', type=int, default=10,
                         help='Number of prototype vectors')
@@ -57,9 +57,9 @@ def parse_args():
     # Loss weights
     parser.add_argument('--lambda_recon', type=float, default=0.1,
                         help='Weight for reconstruction loss')
-    parser.add_argument('--lambda_diversity', type=float, default=0.01,
+    parser.add_argument('--lambda_diversity', type=float, default=0.5,
                         help='Weight for diversity loss')
-    parser.add_argument('--lambda_clustering', type=float, default=0.05,
+    parser.add_argument('--lambda_clustering', type=float, default=0.01,
                         help='Weight for clustering loss')
     
     # Output

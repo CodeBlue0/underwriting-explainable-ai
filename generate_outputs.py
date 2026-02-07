@@ -21,7 +21,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from src.config import get_default_config
 from src.data.preprocessor import LoanDataPreprocessor
-from src.models.model import PrototypeNetwork
+from src.models.model import PrototypeNetwork, create_model_from_config
 
 
 def load_model_and_preprocessor(checkpoint_dir: str = '/workspace/checkpoints'):
@@ -33,18 +33,11 @@ def load_model_and_preprocessor(checkpoint_dir: str = '/workspace/checkpoints'):
     
     # Get config and create model
     config = get_default_config()
-    cardinalities = list(preprocessor.get_cardinalities().values())
+    # Update cardinalities from preprocessor
+    config.categorical_cardinalities = preprocessor.get_cardinalities()
     
-    model = PrototypeNetwork(
-        n_numerical=len(config.numerical_features),
-        categorical_cardinalities=cardinalities,
-        d_model=config.d_model,
-        n_heads=config.n_heads,
-        n_layers=config.n_layers,
-        d_ffn=config.d_ffn,
-        n_prototypes=config.n_prototypes,
-        dropout=config.dropout
-    )
+    # Create model using helper function
+    model = create_model_from_config(config)
     
     # Load model weights
     model_path = os.path.join(checkpoint_dir, 'best_model.pt')

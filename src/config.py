@@ -38,34 +38,37 @@ class ModelConfig:
     })
     
     # FT-Transformer architecture
-    d_model: int = 64
-    n_heads: int = 4
-    n_layers: int = 3
-    d_ffn: int = 128
-    dropout: float = 0.1
+    d_model: int = 256
+    n_heads: int = 8
+    n_layers: int = 6
+    d_ffn: int = 1024
+    dropout: float = 0.2
     attention_dropout: float = 0.1
-    ffn_dropout: float = 0.1
+    ffn_dropout: float = 0.2
     
     # Prototype layer
     n_prototypes: int = 10
-    prototype_dim: int = 64  # Same as d_model
+    prototype_dim: int = 256  # Same as d_model
     similarity_type: str = 'rbf'  # 'rbf' or 'cosine'
-    rbf_sigma: float = 1.0
+    rbf_sigma: float = 16.0  # Increased from 0.5 to prevent vanishing gradients
+    
+    # Class imbalance handling
+    pos_weight: float = 6.0  # Weight for positive class (Default)
     
     # Decoder architecture
-    decoder_hidden_dim: int = 128
+    decoder_hidden_dim: int = 512
     
     # Training hyperparameters
     batch_size: int = 256
     learning_rate: float = 1e-3
-    weight_decay: float = 1e-5
+    weight_decay: float = 1e-4
     epochs: int = 50
     early_stopping_patience: int = 10
     
     # Loss weights
     lambda_reconstruction: float = 0.1
-    lambda_diversity: float = 0.01
-    lambda_clustering: float = 0.05
+    lambda_diversity: float = 0.5  # Drastically increased to force separation
+    lambda_clustering: float = 0.01  # Reduced to prevent clumping
     
     # Paths
     train_path: str = '/workspace/data/train.csv'
