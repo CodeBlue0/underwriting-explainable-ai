@@ -240,7 +240,7 @@ def main():
     
     # Load training data for t-SNE
     print("\n[2/4] Loading training data...")
-    train_path = '/workspace/underwriting-explainable-ai/src/data/dataset/train.csv'
+    train_path = '/workspace/data/train.csv'
     train_df = pd.read_csv(train_path)
     train_labels = train_df['loan_status'].values
     X_num_train, X_cat_train = preprocessor.transform(train_df)
@@ -256,7 +256,7 @@ def main():
     
     # Generate submission
     print("\n[4/4] Generating submission...")
-    test_path = '/workspace/underwriting-explainable-ai/src/data/dataset/test.csv'
+    test_path = '/workspace/data/test.csv'
     submission_path = generate_submission(
         model, preprocessor, test_path,
         output_path='/workspace/underwriting-explainable-ai/submission.csv'
