@@ -68,8 +68,8 @@ class ModelConfig:
     lambda_clustering: float = 0.05
     
     # Paths
-    train_path: str = '/workspace/data/train.csv'
-    test_path: str = '/workspace/data/test.csv'
+    train_path: str = '/workspace/underwriting-explainable-ai/src/data/dataset/train.csv'
+    test_path: str = '/workspace/underwriting-explainable-ai/src/data/dataset/test.csv'
     model_save_path: str = '/workspace/checkpoints'
     
     # Device

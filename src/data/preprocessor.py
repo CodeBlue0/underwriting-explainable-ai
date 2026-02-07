@@ -113,6 +113,36 @@ class LoanDataPreprocessor:
         """
         return {feat: len(enc.classes_) for feat, enc in self.encoders.items()}
     
+    def inverse_transform_numerical(self, X_num: np.ndarray) -> np.ndarray:
+        """
+        Inverse transform scaled numerical features back to original scale.
+        
+        Args:
+            X_num: (N, n_numerical) scaled numerical features
+            
+        Returns:
+            np.ndarray: (N, n_numerical) original scale features
+        """
+        return self.scaler.inverse_transform(X_num)
+    
+    def inverse_transform_categorical(self, X_cat: np.ndarray) -> Dict[str, List[Any]]:
+        """
+        Inverse transform encoded categorical features back to original labels.
+        
+        Args:
+            X_cat: (N, n_categorical) encoded categorical indices
+            
+        Returns:
+            Dict[str, List[Any]]: Dictionary mapping feature name to list of labels
+        """
+        result = {}
+        for i, feat in enumerate(self.categorical_features):
+            le = self.encoders[feat]
+            # Clip indices to valid range
+            indices = np.clip(X_cat[:, i], 0, len(le.classes_) - 1)
+            result[feat] = le.inverse_transform(indices).tolist()
+        return result
+    
     def save(self, path: str):
         """Save preprocessor to file."""
         # Ensure directory exists
@@ -125,6 +155,7 @@ class LoanDataPreprocessor:
         """Load preprocessor from file."""
         with open(path, 'rb') as f:
             return pickle.load(f)
+
 
 
 def load_and_preprocess_data(
