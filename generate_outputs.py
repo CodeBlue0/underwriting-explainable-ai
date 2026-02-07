@@ -111,13 +111,51 @@ def create_tsne_visualization(
     data_embeddings = embeddings[:-n_prototypes]
     proto_embeddings = embeddings[-n_prototypes:]
     
+    # Calculate model predictions for decision boundary
+    print("  Calculating decision boundary...")
+    from sklearn.neighbors import KNeighborsClassifier
+    
+    # We need predictions for the sampled points
+    # latents is already computed
+    z_tensor = torch.tensor(latents, dtype=torch.float32)
+    with torch.no_grad():
+        # Forward pass from latent space
+        similarities = model.prototype_layer(z_tensor)
+        logits = model.classifier(similarities)
+        probs = torch.sigmoid(logits).numpy()
+        preds = (probs > 0.5).astype(int)
+        
+    # Train a simple classifier on 2D embeddings to visualize boundary
+    # KNN preserves local structure well, matching t-SNE's nature
+    clf = KNeighborsClassifier(n_neighbors=50)
+    clf.fit(data_embeddings, preds)
+    
+    # Create grid
+    x_min, x_max = data_embeddings[:, 0].min() - 1, data_embeddings[:, 0].max() + 1
+    y_min, y_max = data_embeddings[:, 1].min() - 1, data_embeddings[:, 1].max() + 1
+    xx, yy = np.meshgrid(np.arange(x_min, x_max, 0.1),
+                         np.arange(y_min, y_max, 0.1))
+    
+    # Predict on grid
+    Z = clf.predict(np.c_[xx.ravel(), yy.ravel()])
+    Z = Z.reshape(xx.shape)
+    
     # Create visualization
     print("  Creating plot...")
-    fig, ax = plt.subplots(figsize=(12, 10))
+    fig, ax = plt.subplots(figsize=(14, 12))
+    
+    # Plot Decision Boundary (Background)
+    # Red for Default (1), Green for Non-Default (0)
+    # We use semi-transparent contourf
+    custom_cmap = matplotlib.colors.ListedColormap(['#e8f5e9', '#ffebee']) # Light Green, Light Red
+    ax.contourf(xx, yy, Z, alpha=0.4, cmap=custom_cmap)
+    
+    # Add boundary line
+    ax.contour(xx, yy, Z, colors=['#999999'], linewidths=0.5, alpha=0.5)
     
     # Plot data points
     colors = ['#2ecc71', '#e74c3c']  # Green for non-default, Red for default
-    labels_text = ['Non-Default', 'Default']
+    labels_text = ['Non-Default (True)', 'Default (True)']
     
     for label in [0, 1]:
         mask = sampled_labels == label
@@ -126,8 +164,10 @@ def create_tsne_visualization(
             data_embeddings[mask, 1],
             c=colors[label],
             label=labels_text[label],
-            alpha=0.5,
-            s=20
+            alpha=0.6,
+            edgecolors='w',
+            linewidths=0.5,
+            s=30
         )
     
     # Plot prototypes
@@ -136,7 +176,7 @@ def create_tsne_visualization(
         proto_embeddings[:, 1],
         c='#9b59b6',  # Purple
         marker='*',
-        s=500,
+        s=600,
         edgecolors='white',
         linewidths=2,
         label='Prototypes',
@@ -150,16 +190,27 @@ def create_tsne_visualization(
             (x, y),
             xytext=(5, 5),
             textcoords='offset points',
-            fontsize=10,
+            fontsize=12,
             fontweight='bold',
-            color='#9b59b6'
+            color='#8e44ad',
+            bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="none", alpha=0.7)
         )
     
-    ax.set_title('t-SNE Visualization of Latent Space with Prototypes', fontsize=14, fontweight='bold')
+    ax.set_title('t-SNE Latent Space with Model Decision Boundary', fontsize=16, fontweight='bold')
     ax.set_xlabel('t-SNE Dimension 1', fontsize=12)
     ax.set_ylabel('t-SNE Dimension 2', fontsize=12)
-    ax.legend(loc='best', fontsize=11)
-    ax.grid(True, alpha=0.3)
+    
+    # Create custom legend
+    from matplotlib.lines import Line2D
+    legend_elements = [
+        Line2D([0], [0], marker='o', color='w', markerfacecolor='#2ecc71', label='Non-Default (Actual)', markersize=10),
+        Line2D([0], [0], marker='o', color='w', markerfacecolor='#e74c3c', label='Default (Actual)', markersize=10),
+        Line2D([0], [0], marker='*', color='w', markerfacecolor='#9b59b6', label='Prototypes', markersize=15),
+        matplotlib.patches.Patch(facecolor='#e8f5e9', label='Predicted: Non-Default Region'),
+        matplotlib.patches.Patch(facecolor='#ffebee', label='Predicted: Default Region'),
+    ]
+    ax.legend(handles=legend_elements, loc='best', fontsize=11, framealpha=0.9)
+    ax.grid(True, alpha=0.2)
     
     plt.tight_layout()
     plt.savefig(output_path, dpi=150, bbox_inches='tight')
