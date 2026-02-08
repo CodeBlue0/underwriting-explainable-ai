@@ -21,7 +21,11 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from src.config import get_default_config
 from src.data.preprocessor import LoanDataPreprocessor
-from src.models.model import PrototypeNetwork, create_model_from_config
+from src.models.model import (
+    PrototypeNetwork, 
+    create_model_from_config,
+    create_class_balanced_model_from_config
+)
 
 
 def load_model_and_preprocessor(checkpoint_dir: str = '/workspace/checkpoints'):
@@ -31,18 +35,39 @@ def load_model_and_preprocessor(checkpoint_dir: str = '/workspace/checkpoints'):
     with open(preprocessor_path, 'rb') as f:
         preprocessor = pickle.load(f)
     
-    # Get config and create model
+    # Get config
     config = get_default_config()
-    # Update cardinalities from preprocessor
     config.categorical_cardinalities = preprocessor.get_cardinalities()
     
-    # Create model using helper function
-    model = create_model_from_config(config)
-    
-    # Load model weights
+    # Load model weights first to check architecture and dimensions
     model_path = os.path.join(checkpoint_dir, 'best_model.pt')
     checkpoint = torch.load(model_path, map_location='cpu')
-    model.load_state_dict(checkpoint['model_state_dict'])
+    state_dict = checkpoint['model_state_dict']
+    
+    # Infer n_prototypes from state_dict
+    if 'prototype_layer.prototypes' in state_dict:
+        n_prototypes = state_dict['prototype_layer.prototypes'].shape[0]
+        config.n_prototypes = n_prototypes
+        print(f"  Inferred n_prototypes: {n_prototypes}")
+    
+    # Check if it's a ClassBalancedPrototypeNetwork
+    # ClassBalancedPrototypeLayer has 'prototype_classes' buffer
+    is_class_balanced = any('prototype_classes' in k for k in state_dict.keys())
+    
+    if is_class_balanced:
+        print("  Detected ClassBalancedPrototypeNetwork structure")
+        # Infer n_prototypes_per_class (Class 0) from prototype_classes buffer
+        proto_classes = state_dict['prototype_layer.prototype_classes']
+        n_class0 = (proto_classes == 0).sum().item()
+        config.n_prototypes_per_class = n_class0
+        print(f"  Inferred n_prototypes_per_class (Class 0): {n_class0}")
+        
+        model = create_class_balanced_model_from_config(config)
+    else:
+        print("  Detected standard PrototypeNetwork structure")
+        model = create_model_from_config(config)
+    
+    model.load_state_dict(state_dict)
     model.eval()
     
     return model, preprocessor, config

@@ -19,8 +19,18 @@ sys.path.insert(0, str(Path(__file__).parent))
 from src.config import ModelConfig, PROTOTYPE_DESCRIPTIONS, get_default_config
 from src.data.preprocessor import LoanDataPreprocessor, load_and_preprocess_data
 from src.data.dataset import create_data_loaders, create_test_loader
-from src.models.model import PrototypeNetwork, create_model_from_config
-from src.training.trainer import train_model, Trainer
+from src.models.model import (
+    PrototypeNetwork, 
+    create_model_from_config,
+    ClassBalancedPrototypeNetwork,
+    create_class_balanced_model_from_config
+)
+from src.training.trainer import (
+    train_model, 
+    Trainer,
+    train_class_balanced_model,
+    ClassBalancedTrainer
+)
 from src.explainability.prototype_explainer import PrototypeExplainer
 from src.explainability.report_generator import LoanDecisionReportGenerator
 
@@ -155,7 +165,18 @@ def main():
     
     # Create model
     print("\n[3/5] Creating model...")
-    model = create_model_from_config(config)
+    # Calculate prototypes based on log of class counts
+    n_class0 = int(np.ceil(np.log2(len(train_target[train_target == 0]))))
+    n_class1 = int(np.ceil(np.log2(len(train_target[train_target == 1]))))
+    
+    # Update config
+    config.n_prototypes = n_class0 + n_class1
+    # Add n_prototypes_per_class attribute to config for ClassBalancedPrototypeNetwork
+    config.n_prototypes_per_class = n_class0
+    
+    # Use ClassBalancedPrototypeNetwork to fix the prototype imbalance issue
+    # This ensures prototypes are distributed across both Default and Non-Default classes
+    model = create_class_balanced_model_from_config(config)
     
     # Count parameters
     total_params = sum(p.numel() for p in model.parameters())
@@ -168,8 +189,9 @@ def main():
     print(f"    - Hidden dim: {config.d_model}")
     print(f"    - Attention heads: {config.n_heads}")
     print(f"    - Transformer layers: {config.n_layers}")
-    print(f"\n  Prototype Layer:")
-    print(f"    - Number of prototypes: {config.n_prototypes}")
+    print(f"\n  Class-Balanced Prototype Layer:")
+    print(f"    - Total prototypes: {config.n_prototypes}")
+    print(f"    - Per class: {config.n_prototypes_per_class} Non-Default (Class 0), {config.n_prototypes - config.n_prototypes_per_class} Default (Class 1)")
     print(f"    - Similarity type: {config.similarity_type}")
     
     # Train
@@ -177,7 +199,8 @@ def main():
     print("-"*60)
     
     save_path = os.path.join(args.save_dir, 'best_model.pt')
-    model, history = train_model(
+    # Use class-balanced training to maintain prototype distribution
+    model, history = train_class_balanced_model(
         model=model,
         train_loader=train_loader,
         val_loader=val_loader,

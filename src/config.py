@@ -75,6 +75,24 @@ class ModelConfig:
     test_path: str = '/workspace/data/test.csv'
     model_save_path: str = '/workspace/checkpoints'
     
+    # PTaRL Settings
+    use_ptarl: bool = True  # Enable PTaRL two-phase training
+    n_global_prototypes: int = None  # Number of global prototypes (default: ceil(log2(n_features)))
+    phase1_epochs: int = 25  # Epochs for Phase 1 (standard supervised)
+    phase2_epochs: int = 25  # Epochs for Phase 2 (space calibration)
+    
+    # PTaRL Loss Weights
+    ptarl_weights: Dict[str, float] = field(default_factory=lambda: {
+        'task_weight': 1.0,
+        'projection_weight': 1.0,
+        'diversifying_weight': 0.5,
+        'orthogonalization_weight': 2.5
+    })
+    
+    # Sinkhorn Distance Parameters
+    sinkhorn_eps: float = 0.1
+    sinkhorn_max_iter: int = 50
+    
     # Device
     device: str = 'cuda' if torch.cuda.is_available() else 'cpu'
     
