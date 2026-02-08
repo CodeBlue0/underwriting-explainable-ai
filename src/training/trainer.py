@@ -94,6 +94,36 @@ class Trainer:
         embeddings, _ = self._collect_embeddings_and_labels()
         return embeddings
     
+    def _reinitialize_encoder(self):
+        """
+        Re-initialize encoder parameters for Phase 2 (per PTaRL paper).
+        
+        The paper re-initializes ALL model parameters when starting Phase 2,
+        keeping only the global prototypes learned from Phase 1 embeddings.
+        """
+        # Re-initialize encoder
+        for module in self.model.encoder.modules():
+            if hasattr(module, 'reset_parameters'):
+                module.reset_parameters()
+        
+        # Re-initialize Phase 1 classifier (will be unused in Phase 2)
+        if hasattr(self.model, 'phase1_classifier'):
+            self.model.phase1_classifier.reset_parameters()
+        
+        # Re-initialize projector (Phase 2 component)
+        for module in self.model.projector.modules():
+            if hasattr(module, 'reset_parameters'):
+                module.reset_parameters()
+        
+        # Re-initialize P-Space classifier
+        if hasattr(self.model, 'pspace_classifier'):
+            self.model.pspace_classifier.reset_parameters()
+        
+        # Re-initialize decoder
+        for module in self.model.decoder.modules():
+            if hasattr(module, 'reset_parameters'):
+                module.reset_parameters()
+
     def _collect_embeddings_and_labels(self) -> tuple:
         """Collect all embeddings and labels from training data."""
         self.model.eval()
@@ -243,15 +273,18 @@ class Trainer:
         self.current_phase = phase
         
         if phase == 1:
-            # Initialize class-balanced local prototypes before Phase 1
-            if hasattr(self.model, 'initialize_local_prototypes') and not getattr(self.model, '_local_prototypes_initialized', False):
-                if verbose:
-                    print("Initializing class-balanced local prototypes via KMeans...")
-                embeddings, labels = self._collect_embeddings_and_labels()
-                self.model.initialize_local_prototypes(embeddings, labels)
+            # Phase 1: Simple supervised learning (per PTaRL paper)
+            # No local prototype initialization needed - just train encoder + classifier
             self.model.set_first_phase()
+            if verbose:
+                print("Phase 1: Training encoder + classifier (no local prototypes)")
         else:
-            # Initialize global prototypes via KMeans
+            # Phase 2: Re-initialize encoder + train with P-Space (per PTaRL paper)
+            if verbose:
+                print("Re-initializing encoder parameters for Phase 2 (per PTaRL paper)...")
+            self._reinitialize_encoder()
+            
+            # Initialize global prototypes via KMeans on Phase 1 embeddings
             if verbose:
                 print("Initializing global prototypes via KMeans...")
             embeddings = self._collect_embeddings()

@@ -9,30 +9,28 @@ from typing import Dict
 
 class PrototypeLoss(nn.Module):
     """
-    Combined loss function for prototype network (Phase 1).
+    Phase 1 Loss function (aligned with PTaRL paper).
     
-    Loss = L_classification + λ_recon * L_reconstruction 
-         + λ_diversity * L_diversity + λ_clustering * L_clustering
+    Loss = L_classification + λ_recon * L_reconstruction
     
     Components:
     1. Classification Loss (BCE): Main task loss
-    2. Reconstruction Loss: Ensures latent space preserves information
-    3. Diversity Loss: Encourages prototypes to be different
-    4. Clustering Loss: Encourages samples to be near prototypes
+    2. Reconstruction Loss: Ensures latent space preserves information (keeps decoder aligned)
+    
+    Note: Diversity and Clustering losses removed per PTaRL paper.
+          Phase 1 is simple supervised learning without prototypes.
     """
     
     def __init__(
         self,
         lambda_reconstruction: float = 0.1,
-        lambda_diversity: float = 0.01,
-        lambda_clustering: float = 0.05,
+        lambda_diversity: float = 0.01,  # Kept for backward compat, but unused
+        lambda_clustering: float = 0.05,  # Kept for backward compat, but unused
         num_weight: float = 1.0,
         cat_weight: float = 1.0
     ):
         super().__init__()
         self.lambda_reconstruction = lambda_reconstruction
-        self.lambda_diversity = lambda_diversity
-        self.lambda_clustering = lambda_clustering
         self.num_weight = num_weight
         self.cat_weight = cat_weight
         
@@ -46,17 +44,17 @@ class PrototypeLoss(nn.Module):
         targets: torch.Tensor,
         x_num: torch.Tensor,
         x_cat: torch.Tensor,
-        prototype_layer
+        prototype_layer=None  # Not used anymore, kept for backward compat
     ) -> Dict[str, torch.Tensor]:
         """
-        Compute all losses.
+        Compute Phase 1 losses.
         
         Args:
             outputs: Model output dictionary
             targets: (batch_size,) target labels
             x_num: (batch_size, n_numerical) input numerical features
             x_cat: (batch_size, n_categorical) input categorical features
-            prototype_layer: PrototypeLayer for regularization losses
+            prototype_layer: Unused, kept for backward compatibility
             
         Returns:
             Dictionary of losses including 'total' loss
@@ -75,25 +73,8 @@ class PrototypeLoss(nn.Module):
         
         loss_recon = self.num_weight * loss_recon_num + self.cat_weight * loss_recon_cat
         
-        # 3. Diversity loss (encourage prototypes to be different)
-        loss_diversity = prototype_layer.diversity_loss()
-        
-        # 4. Clustering loss (encourage samples to be near prototypes)
-        # Handle ClassBalancedPrototypeLayer which requires labels
-        import inspect
-        sig = inspect.signature(prototype_layer.clustering_loss)
-        if 'labels' in sig.parameters:
-            loss_clustering = prototype_layer.clustering_loss(outputs['z'], targets)
-        else:
-            loss_clustering = prototype_layer.clustering_loss(outputs['z'])
-        
-        # Total loss
-        total_loss = (
-            loss_cls 
-            + self.lambda_reconstruction * loss_recon
-            + self.lambda_diversity * loss_diversity
-            + self.lambda_clustering * loss_clustering
-        )
+        # Total loss (simplified per PTaRL paper)
+        total_loss = loss_cls + self.lambda_reconstruction * loss_recon
         
         return {
             'total': total_loss,
@@ -101,8 +82,6 @@ class PrototypeLoss(nn.Module):
             'reconstruction': loss_recon,
             'reconstruction_num': loss_recon_num,
             'reconstruction_cat': loss_recon_cat,
-            'diversity': loss_diversity,
-            'clustering': loss_clustering
         }
 
 

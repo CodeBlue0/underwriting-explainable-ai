@@ -122,11 +122,18 @@ class PrototypeNetwork(nn.Module):
         )
         
         # 5. Classification Heads
+        # Phase 1: Simple linear classifier on embeddings (per PTaRL paper)
+        self.phase1_classifier = nn.Linear(d_model, 1)
+        nn.init.xavier_uniform_(self.phase1_classifier.weight)
+        nn.init.constant_(self.phase1_classifier.bias, -2.0)  # Initialize for imbalanced data
+        
+        # Prototype-based classifier (kept for compatibility, used in explanations)
         self.classifier = ClassificationHead(
             n_prototypes=n_local_prototypes,
             n_classes=1
         )
         
+        # Phase 2: P-Space classifier
         self.pspace_classifier = nn.Linear(d_model, 1)
         nn.init.xavier_uniform_(self.pspace_classifier.weight)
         nn.init.constant_(self.pspace_classifier.bias, -2.0)
@@ -186,10 +193,16 @@ class PrototypeNetwork(nn.Module):
         x_cat: torch.Tensor,
         return_all: bool = True
     ) -> Dict[str, Any]:
-        """Phase 1 forward pass: standard prototype-based classification."""
+        """
+        Phase 1 forward pass: Simple encoder → classifier (per PTaRL paper).
+        
+        No local prototype layer - just learns good representations.
+        Reconstruction loss is used to ensure encoder learns useful features.
+        """
         z = self.encoder(x_num, x_cat)
-        similarities = self.prototype_layer(z)
-        logits = self.classifier(similarities)
+        
+        # Simple linear classification on embeddings
+        logits = self.phase1_classifier(z).squeeze(-1)
         probabilities = torch.sigmoid(logits)
         
         result = {
@@ -199,12 +212,10 @@ class PrototypeNetwork(nn.Module):
         }
         
         if return_all:
+            # Decoder for reconstruction loss
             num_recon, cat_recons = self.decoder(z)
-            contributions = self.classifier.get_prototype_contributions(similarities)
             
             result.update({
-                'similarities': similarities,
-                'contributions': contributions,
                 'num_recon': num_recon,
                 'cat_recons': cat_recons
             })

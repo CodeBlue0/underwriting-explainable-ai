@@ -60,11 +60,10 @@ def load_model_and_preprocessor(
     checkpoint = torch.load(model_path, map_location='cpu')
     state_dict = checkpoint['model_state_dict']
     
-    # Infer n_prototypes from state_dict
+    # Infer n_prototypes from state_dict (Silent update)
     if 'prototype_layer.prototypes' in state_dict:
         n_prototypes = state_dict['prototype_layer.prototypes'].shape[0]
         config.n_prototypes = n_prototypes
-        print(f"  Inferred n_prototypes: {n_prototypes}")
     
     # Infer global prototypes
     if 'global_prototype_layer.prototypes' in state_dict:
@@ -118,10 +117,10 @@ def create_tsne_visualization(
     perplexity: int = 30,
     random_state: int = 42
 ):
-    """Create t-SNE visualization of latent space with prototypes."""
+    """Create t-SNE visualization using GLOBAL prototypes for all phases."""
     print(f"Creating t-SNE visualization with {n_samples} samples...")
     
-    # Sample training data
+    # Sample training data for visualization
     np.random.seed(random_state)
     indices = np.random.choice(len(train_num), min(n_samples, len(train_num)), replace=False)
     
@@ -129,18 +128,40 @@ def create_tsne_visualization(
     sampled_cat = train_cat[indices]
     sampled_labels = train_labels[indices]
     
-    # Get latent representations
-    print("  Getting latent representations...")
+    # Get latent representations for sampled data
+    print("  Getting latent representations for visualization...")
     latents = get_latent_representations(model, sampled_num, sampled_cat)
     
-    # Get prototype vectors based on phase
-    if model.phase == 2:
-        prototypes = model.global_prototype_layer.prototypes.detach().numpy()
-        proto_label = 'Global Prototypes'
-    else:
-        prototypes = model.prototype_layer.prototypes.detach().numpy()
-        proto_label = 'Local Prototypes'
+    # --- HANDLE PROTOTYPES ---
+    # We ALWAYS want to show Global Prototypes (4), even for Phase 1.
+    # If the model is in Phase 1 or Global Prototypes are not initialized (all zeros or random),
+    # we need to initialize them using KMeans on the embeddings, just like in Phase 2 training.
+    
+    print("  Preparing Global Prototypes...")
+    global_protos = model.global_prototype_layer.prototypes.detach().cpu()
+    
+    # Check if we need to initialize/re-initialize global prototypes
+    # Condition: Phase 1 OR (Phase 2 but prototypes look uninitialized/random)
+    # A simple check is difficult, so for Phase 1 we ALWAYS re-initialize to show what Phase 2 WOULD start with.
+    if model.phase == 1:
+        print("    Phase 1 detected: Initializing Global Prototypes via KMeans for visualization...")
+        # We need embeddings from FULL training data to do good KMeans, or at least a large subset.
+        # Using the sampled data (5000) is usually sufficient for valid visualization.
+        
+        # NOTE: model.initialize_global_prototypes expects tensor on same device
+        # We use the 'latents' computed above (numpy) -> tensor
+        latents_tensor = torch.tensor(latents, dtype=torch.float32)
+        
+        # Run KMeans initialization
+        model.global_prototype_layer.initialize_from_embeddings(latents_tensor)
+        
+        # Update global_protos
+        global_protos = model.global_prototype_layer.prototypes.detach().cpu()
+        print(f"    Initialized {len(global_protos)} Global Prototypes.")
+    
+    prototypes = global_protos.numpy()
     n_prototypes = len(prototypes)
+    proto_label = 'Global Prototypes'
     
     # Combine latents and prototypes for t-SNE
     all_vectors = np.vstack([latents, prototypes])
@@ -166,13 +187,18 @@ def create_tsne_visualization(
     
     z_tensor = torch.tensor(latents, dtype=torch.float32)
     with torch.no_grad():
+        # Ideally, we should use the full model, but for Phase 1, pspace_classifier isn't trained.
+        # So we use the Phase 1 classifier (local prototypes) to get the PREDICTIONS (Non-Default/Default),
+        # but we visualize the GLOBAL prototypes.
+        
         if model.phase == 2:
             coordinates = model.projector(z_tensor)
             p_space = model.global_prototype_layer(coordinates)
             logits = model.pspace_classifier(p_space).squeeze(-1)
         else:
-            similarities = model.prototype_layer(z_tensor)
-            logits = model.classifier(similarities)
+            # Phase 1: Use simple linear classifier (no local prototypes)
+            logits = model.phase1_classifier(z_tensor).squeeze(-1)
+            
         probs = torch.sigmoid(logits).numpy()
         preds = (probs > 0.5).astype(int)
         
