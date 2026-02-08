@@ -84,9 +84,9 @@ class ModelConfig:
     # PTaRL Loss Weights
     ptarl_weights: Dict[str, float] = field(default_factory=lambda: {
         'task_weight': 1.0,
-        'projection_weight': 1.0,
-        'diversifying_weight': 0.5,
-        'orthogonalization_weight': 2.5
+        'projection_weight': 0.25,
+        'diversifying_weight': 0.25,
+        'orthogonalization_weight': 0.25
     })
     
     # Sinkhorn Distance Parameters

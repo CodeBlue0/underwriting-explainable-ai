@@ -1,7 +1,13 @@
 #!/usr/bin/env python3
 """
 Generate t-SNE visualization and submission.csv from trained model.
+
+Usage:
+    python generate_outputs.py  # Use default checkpoint
+    python generate_outputs.py --checkpoint /workspace/checkpoints/best_model_phase1.pt --phase 1
+    python generate_outputs.py --checkpoint /workspace/checkpoints/best_model_phase2.pt --phase 2
 """
+import argparse
 import os
 import sys
 import torch
@@ -21,16 +27,22 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from src.config import get_default_config
 from src.data.preprocessor import LoanDataPreprocessor
-from src.models.model import (
-    PrototypeNetwork, 
-    create_model_from_config,
-    create_class_balanced_model_from_config,
-    create_ptarl_model_from_config
-)
+from src.models.model import PrototypeNetwork, create_model_from_config
 
 
-def load_model_and_preprocessor(checkpoint_dir: str = '/workspace/checkpoints'):
-    """Load trained model and preprocessor."""
+def load_model_and_preprocessor(
+    checkpoint_dir: str = '/workspace/checkpoints',
+    model_path: str = None,
+    force_phase: int = None
+):
+    """
+    Load trained model and preprocessor.
+    
+    Args:
+        checkpoint_dir: Directory containing preprocessor.pkl
+        model_path: Path to specific model checkpoint (default: best_model.pt)
+        force_phase: Force model to specific phase (1 or 2)
+    """
     # Load preprocessor
     preprocessor_path = os.path.join(checkpoint_dir, 'preprocessor.pkl')
     with open(preprocessor_path, 'rb') as f:
@@ -40,8 +52,11 @@ def load_model_and_preprocessor(checkpoint_dir: str = '/workspace/checkpoints'):
     config = get_default_config()
     config.categorical_cardinalities = preprocessor.get_cardinalities()
     
-    # Load model weights first to check architecture and dimensions
-    model_path = os.path.join(checkpoint_dir, 'best_model.pt')
+    # Load model weights
+    if model_path is None:
+        model_path = os.path.join(checkpoint_dir, 'best_model.pt')
+    print(f"  Loading checkpoint: {model_path}")
+    
     checkpoint = torch.load(model_path, map_location='cpu')
     state_dict = checkpoint['model_state_dict']
     
@@ -51,33 +66,25 @@ def load_model_and_preprocessor(checkpoint_dir: str = '/workspace/checkpoints'):
         config.n_prototypes = n_prototypes
         print(f"  Inferred n_prototypes: {n_prototypes}")
     
-    # Check model type
-    is_ptarl = 'global_prototype_layer.prototypes' in state_dict
-    is_class_balanced = any('prototype_classes' in k for k in state_dict.keys())
+    # Infer global prototypes
+    if 'global_prototype_layer.prototypes' in state_dict:
+        config.n_global_prototypes = state_dict['global_prototype_layer.prototypes'].shape[0]
+        print(f"  Inferred n_global_prototypes: {config.n_global_prototypes}")
     
-    if is_ptarl:
-        print("  Detected PTaRL structure")
-        # Infer global/local prototypes
-        if 'global_prototype_layer.prototypes' in state_dict:
-            config.n_global_prototypes = state_dict['global_prototype_layer.prototypes'].shape[0]
-            
-        model = create_ptarl_model_from_config(config)
-        # Force phase to 2 for evaluation/generation if it's a PTaRL model
-        if hasattr(model, 'set_second_phase'):
-            model.set_second_phase()
-            
-    elif is_class_balanced:
-        print("  Detected ClassBalancedPrototypeNetwork structure")
-        # Infer n_prototypes_per_class (Class 0) from prototype_classes buffer
-        proto_classes = state_dict['prototype_layer.prototype_classes']
-        n_class0 = (proto_classes == 0).sum().item()
-        config.n_prototypes_per_class = n_class0
-        print(f"  Inferred n_prototypes_per_class (Class 0): {n_class0}")
-        
-        model = create_class_balanced_model_from_config(config)
+    # Create model
+    model = create_model_from_config(config)
+    
+    # Set phase
+    if force_phase is not None:
+        phase = force_phase
     else:
-        print("  Detected standard PrototypeNetwork structure")
-        model = create_model_from_config(config)
+        phase = checkpoint.get('phase', 2)
+    
+    if phase == 2:
+        model.set_second_phase()
+    else:
+        model.set_first_phase()
+    print(f"  Model phase: {phase}")
     
     model.load_state_dict(state_dict)
     model.eval()
@@ -126,8 +133,13 @@ def create_tsne_visualization(
     print("  Getting latent representations...")
     latents = get_latent_representations(model, sampled_num, sampled_cat)
     
-    # Get prototype vectors
-    prototypes = model.prototype_layer.prototypes.detach().numpy()
+    # Get prototype vectors based on phase
+    if model.phase == 2:
+        prototypes = model.global_prototype_layer.prototypes.detach().numpy()
+        proto_label = 'Global Prototypes'
+    else:
+        prototypes = model.prototype_layer.prototypes.detach().numpy()
+        proto_label = 'Local Prototypes'
     n_prototypes = len(prototypes)
     
     # Combine latents and prototypes for t-SNE
@@ -152,26 +164,32 @@ def create_tsne_visualization(
     print("  Calculating decision boundary...")
     from sklearn.neighbors import KNeighborsClassifier
     
-    # We need predictions for the sampled points
-    # latents is already computed
     z_tensor = torch.tensor(latents, dtype=torch.float32)
     with torch.no_grad():
-        # Forward pass from latent space
-        similarities = model.prototype_layer(z_tensor)
-        logits = model.classifier(similarities)
+        if model.phase == 2:
+            coordinates = model.projector(z_tensor)
+            p_space = model.global_prototype_layer(coordinates)
+            logits = model.pspace_classifier(p_space).squeeze(-1)
+        else:
+            similarities = model.prototype_layer(z_tensor)
+            logits = model.classifier(similarities)
         probs = torch.sigmoid(logits).numpy()
         preds = (probs > 0.5).astype(int)
         
     # Train a simple classifier on 2D embeddings to visualize boundary
-    # KNN preserves local structure well, matching t-SNE's nature
     clf = KNeighborsClassifier(n_neighbors=50)
     clf.fit(data_embeddings, preds)
     
+    # Print prototype coordinates for debugging
+    print(f"  Visualizing {n_prototypes} prototypes ({proto_label})")
+    for i, (x, y) in enumerate(proto_embeddings):
+        print(f"    P{i+1}: ({x:.4f}, {y:.4f})")
+    
     # Create grid
-    x_min, x_max = data_embeddings[:, 0].min() - 1, data_embeddings[:, 0].max() + 1
-    y_min, y_max = data_embeddings[:, 1].min() - 1, data_embeddings[:, 1].max() + 1
-    xx, yy = np.meshgrid(np.arange(x_min, x_max, 0.1),
-                         np.arange(y_min, y_max, 0.1))
+    x_min, x_max = data_embeddings[:, 0].min() - 5, data_embeddings[:, 0].max() + 5
+    y_min, y_max = data_embeddings[:, 1].min() - 5, data_embeddings[:, 1].max() + 5
+    xx, yy = np.meshgrid(np.arange(x_min, x_max, 0.5),
+                         np.arange(y_min, y_max, 0.5))
     
     # Predict on grid
     Z = clf.predict(np.c_[xx.ravel(), yy.ravel()])
@@ -179,15 +197,11 @@ def create_tsne_visualization(
     
     # Create visualization
     print("  Creating plot...")
-    fig, ax = plt.subplots(figsize=(14, 12))
+    fig, ax = plt.subplots(figsize=(16, 12))  # Slightly wider for legend
     
     # Plot Decision Boundary (Background)
-    # Red for Default (1), Green for Non-Default (0)
-    # We use semi-transparent contourf
-    custom_cmap = matplotlib.colors.ListedColormap(['#e8f5e9', '#ffebee']) # Light Green, Light Red
+    custom_cmap = matplotlib.colors.ListedColormap(['#e8f5e9', '#ffebee'])
     ax.contourf(xx, yy, Z, alpha=0.4, cmap=custom_cmap)
-    
-    # Add boundary line
     ax.contour(xx, yy, Z, colors=['#999999'], linewidths=0.5, alpha=0.5)
     
     # Plot data points
@@ -216,24 +230,26 @@ def create_tsne_visualization(
         s=600,
         edgecolors='white',
         linewidths=2,
-        label='Prototypes',
+        label=proto_label,
         zorder=100
     )
     
     # Add prototype labels
     for i, (x, y) in enumerate(proto_embeddings):
         ax.annotate(
-            f'P{i}',
+            f'P{i+1}',  # 1-based indexing
             (x, y),
-            xytext=(5, 5),
+            xytext=(0, 10),
             textcoords='offset points',
+            ha='center',
             fontsize=12,
             fontweight='bold',
             color='#8e44ad',
             bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="none", alpha=0.7)
         )
     
-    ax.set_title('t-SNE Latent Space with Model Decision Boundary', fontsize=16, fontweight='bold')
+    phase_str = "Phase 2 (P-Space)" if model.phase == 2 else "Phase 1 (Local)"
+    ax.set_title(f't-SNE Latent Space - {phase_str}', fontsize=16, fontweight='bold')
     ax.set_xlabel('t-SNE Dimension 1', fontsize=12)
     ax.set_ylabel('t-SNE Dimension 2', fontsize=12)
     
@@ -242,11 +258,12 @@ def create_tsne_visualization(
     legend_elements = [
         Line2D([0], [0], marker='o', color='w', markerfacecolor='#2ecc71', label='Non-Default (Actual)', markersize=10),
         Line2D([0], [0], marker='o', color='w', markerfacecolor='#e74c3c', label='Default (Actual)', markersize=10),
-        Line2D([0], [0], marker='*', color='w', markerfacecolor='#9b59b6', label='Prototypes', markersize=15),
+        Line2D([0], [0], marker='*', color='w', markerfacecolor='#9b59b6', label=proto_label, markersize=15),
         matplotlib.patches.Patch(facecolor='#e8f5e9', label='Predicted: Non-Default Region'),
         matplotlib.patches.Patch(facecolor='#ffebee', label='Predicted: Default Region'),
     ]
-    ax.legend(handles=legend_elements, loc='best', fontsize=11, framealpha=0.9)
+    # Move legend outside
+    ax.legend(handles=legend_elements, loc='upper left', bbox_to_anchor=(1.02, 1), fontsize=11, framealpha=0.9)
     ax.grid(True, alpha=0.2)
     
     plt.tight_layout()
@@ -274,7 +291,6 @@ def generate_submission(
     if 'id' in test_df.columns:
         ids = test_df['id'].values
     else:
-        # Create ids starting from training size
         ids = np.arange(58645, 58645 + len(test_df))
     
     # Preprocess test data
@@ -309,14 +325,37 @@ def generate_submission(
     return output_path
 
 
+def parse_args():
+    parser = argparse.ArgumentParser(description='Generate t-SNE visualization and submission')
+    parser.add_argument('--checkpoint', type=str, default=None,
+                        help='Path to model checkpoint (default: best_model.pt)')
+    parser.add_argument('--phase', type=int, choices=[1, 2], default=None,
+                        help='Force model phase (1 or 2). Default: use phase from checkpoint.')
+    parser.add_argument('--output-suffix', type=str, default='',
+                        help='Suffix for output files (e.g., "_phase1" for tsne_visualization_phase1.png)')
+    parser.add_argument('--checkpoint-dir', type=str, default='/workspace/checkpoints',
+                        help='Directory containing preprocessor.pkl')
+    parser.add_argument('--skip-submission', action='store_true',
+                        help='Skip submission.csv generation')
+    return parser.parse_args()
+
+
 def main():
+    args = parse_args()
+    
+    suffix = args.output_suffix
+    
     print("=" * 60)
     print("GENERATING T-SNE VISUALIZATION AND SUBMISSION")
     print("=" * 60)
     
     # Load model and preprocessor
     print("\n[1/4] Loading model and preprocessor...")
-    model, preprocessor, config = load_model_and_preprocessor()
+    model, preprocessor, config = load_model_and_preprocessor(
+        checkpoint_dir=args.checkpoint_dir,
+        model_path=args.checkpoint,
+        force_phase=args.phase
+    )
     print("  Model loaded successfully!")
     
     # Load training data for t-SNE
@@ -329,27 +368,35 @@ def main():
     
     # Create t-SNE visualization
     print("\n[3/4] Creating t-SNE visualization...")
+    tsne_output = f'/workspace/underwriting-explainable-ai/tsne_visualization{suffix}.png'
     tsne_path = create_tsne_visualization(
         model, X_num_train, X_cat_train, train_labels,
-        output_path='/workspace/underwriting-explainable-ai/tsne_visualization.png',
+        output_path=tsne_output,
         n_samples=5000
     )
     
     # Generate submission
-    print("\n[4/4] Generating submission...")
-    test_path = '/workspace/data/test.csv'
-    submission_path = generate_submission(
-        model, preprocessor, test_path,
-        output_path='/workspace/underwriting-explainable-ai/submission.csv'
-    )
+    if not args.skip_submission:
+        print("\n[4/4] Generating submission...")
+        test_path = '/workspace/data/test.csv'
+        submission_output = f'/workspace/underwriting-explainable-ai/submission{suffix}.csv'
+        submission_path = generate_submission(
+            model, preprocessor, test_path,
+            output_path=submission_output
+        )
+    else:
+        print("\n[4/4] Skipping submission generation...")
+        submission_path = None
     
     print("\n" + "=" * 60)
     print("COMPLETE!")
     print("=" * 60)
     print(f"\nOutputs:")
     print(f"  - t-SNE: {tsne_path}")
-    print(f"  - Submission: {submission_path}")
+    if submission_path:
+        print(f"  - Submission: {submission_path}")
 
 
 if __name__ == '__main__':
     main()
+

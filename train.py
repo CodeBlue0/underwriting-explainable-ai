@@ -4,13 +4,14 @@ Main training script for Prototype-based Neuro-Symbolic Model.
 
 Usage:
     python train.py [--epochs 50] [--batch_size 256] [--lr 1e-3]
+    python train.py --phase 1  # Train Phase 1 only
+    python train.py --phase 2  # Train Phase 2 only (requires Phase 1 checkpoint)
 """
 import argparse
 import os
 import sys
 import torch
 import numpy as np
-import pandas as pd
 from pathlib import Path
 
 # Add src to path
@@ -19,18 +20,9 @@ sys.path.insert(0, str(Path(__file__).parent))
 from src.config import ModelConfig, PROTOTYPE_DESCRIPTIONS, get_default_config
 from src.data.preprocessor import LoanDataPreprocessor, load_and_preprocess_data
 from src.data.dataset import create_data_loaders, create_test_loader
-from src.models.model import (
-    PrototypeNetwork, 
-    create_model_from_config,
-    PrototypeNetworkPTaRL,
-    create_ptarl_model_from_config
-)
-from src.training.trainer import (
-    train_model, 
-    Trainer,
-    train_ptarl_model,
-    PTaRLTrainer
-)
+from src.models.model import PrototypeNetwork, create_model_from_config
+from src.models.decoder import DecoderEvaluator
+from src.training.trainer import train_model, Trainer
 from src.explainability.prototype_explainer import PrototypeExplainer
 from src.explainability.report_generator import LoanDecisionReportGenerator
 
@@ -63,6 +55,12 @@ def parse_args():
                         help='Learning rate')
     parser.add_argument('--patience', type=int, default=10,
                         help='Early stopping patience')
+    
+    # Phase-specific training
+    parser.add_argument('--phase', type=int, choices=[1, 2], default=None,
+                        help='Train specific phase only (1 or 2). Default: train both phases.')
+    parser.add_argument('--checkpoint', type=str, default=None,
+                        help='Path to checkpoint to resume from (required for phase 2 only training)')
     
     # Loss weights
     parser.add_argument('--lambda_recon', type=float, default=0.1,
@@ -100,6 +98,11 @@ def main():
     # Device
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     print(f"Using device: {device}")
+    
+    # Validate phase 2 requires checkpoint
+    if args.phase == 2 and args.checkpoint is None:
+        print("ERROR: --phase 2 requires --checkpoint to load Phase 1 trained model")
+        sys.exit(1)
     
     # Create config
     config = get_default_config()
@@ -164,12 +167,16 @@ def main():
     print(f"  Validation batches: {len(val_loader)}")
     
     # Create model
-    print("\n[3/5] Creating PTaRL model...")
+    print("\n[3/5] Creating model...")
+    model = create_model_from_config(config)
     
-    # Use PTaRL model for two-phase learning:
-    # Phase 1: Local prototype learning
-    # Phase 2: Global prototype space calibration
-    model = create_ptarl_model_from_config(config)
+    # Load checkpoint if provided
+    if args.checkpoint:
+        print(f"  Loading checkpoint from: {args.checkpoint}")
+        checkpoint = torch.load(args.checkpoint, map_location=device)
+        model.load_state_dict(checkpoint['model_state_dict'])
+        if args.phase == 2:
+            print("  Continuing to Phase 2 training...")
     
     # Count parameters
     total_params = sum(p.numel() for p in model.parameters())
@@ -185,25 +192,29 @@ def main():
     print(f"\n  PTaRL Architecture:")
     print(f"    - Local prototypes: {config.n_prototypes}")
     print(f"    - Global prototypes: {model.n_global_prototypes}")
-    print(f"    - Phase 1 epochs: {config.phase1_epochs}")
-    print(f"    - Phase 2 epochs: {config.phase2_epochs}")
     print(f"    - Similarity type: {config.similarity_type}")
     
-    # Train with PTaRL two-phase learning
-    print("\n[4/5] Training PTaRL model (Two-Phase)...")
+    # Phase info
+    if args.phase:
+        print(f"\n  Training Phase: {args.phase} only")
+    else:
+        print(f"\n  Training Phases: 1 and 2 (full)")
+        print(f"    - Phase 1 epochs: {config.phase1_epochs}")
+        print(f"    - Phase 2 epochs: {config.phase2_epochs}")
+    
+    # Train
+    print("\n[4/5] Training model...")
     print("-"*60)
     
     save_path = os.path.join(args.save_dir, 'best_model.pt')
-    # PTaRL training:
-    # Phase 1: Standard supervised learning with local prototypes
-    # Phase 2: Space calibration with global prototypes
-    model, history = train_ptarl_model(
+    model, history = train_model(
         model=model,
         train_loader=train_loader,
         val_loader=val_loader,
         config=config,
         save_path=save_path,
-        verbose=True
+        verbose=True,
+        phase=args.phase  # NEW: Pass phase for single-phase training
     )
     
     print("-"*60)
@@ -215,8 +226,20 @@ def main():
     print(f"\nPreprocessor saved to: {preprocessor_path}")
     print(f"Model saved to: {save_path}")
     
+    # Evaluate decoder
+    print("\n[5/7] Evaluating decoder reconstruction...")
+    print("-"*60)
+    
+    feature_names = {
+        'numerical': config.numerical_features,
+        'categorical': config.categorical_features
+    }
+    decoder_evaluator = DecoderEvaluator(feature_names=feature_names)
+    decoder_metrics = decoder_evaluator.evaluate(model, val_loader, device=device)
+    decoder_evaluator.print_report(decoder_metrics)
+    
     # Generate sample explanation
-    print("\n[5/5] Generating sample explanation...")
+    print("\n[6/7] Generating sample explanation...")
     print("-"*60)
     
     explainer = PrototypeExplainer(

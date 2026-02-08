@@ -129,13 +129,16 @@ class PrototypeExplainer:
         # Handle PTaRL Phase 2 explanation structure
         if 'top_global_prototypes' in explanation:
             # Map global prototypes to standard format
+            # Note: In Phase 2, pspace_classifier operates on d_model-dimensional P-Space,
+            # not on per-prototype weights. Use coordinate magnitude as contribution.
             explanation['top_prototypes'] = []
             for p in explanation['top_global_prototypes']:
+                coord_val = p['coordinate']
                 explanation['top_prototypes'].append({
                     'index': p['index'],
-                    'similarity': p['coordinate'],  # Use coordinate as similarity measure
-                    'weight': float(weights[p['index']]),  # Use actual weight
-                    'contribution': p['coordinate']
+                    'similarity': coord_val,  # Use coordinate as similarity measure
+                    'weight': abs(coord_val),  # Use absolute coordinate as weight
+                    'contribution': coord_val
                 })
         
         # Get decoded prototype features
