@@ -22,14 +22,14 @@ from src.data.dataset import create_data_loaders, create_test_loader
 from src.models.model import (
     PrototypeNetwork, 
     create_model_from_config,
-    ClassBalancedPrototypeNetwork,
-    create_class_balanced_model_from_config
+    PrototypeNetworkPTaRL,
+    create_ptarl_model_from_config
 )
 from src.training.trainer import (
     train_model, 
     Trainer,
-    train_class_balanced_model,
-    ClassBalancedTrainer
+    train_ptarl_model,
+    PTaRLTrainer
 )
 from src.explainability.prototype_explainer import PrototypeExplainer
 from src.explainability.report_generator import LoanDecisionReportGenerator
@@ -164,19 +164,12 @@ def main():
     print(f"  Validation batches: {len(val_loader)}")
     
     # Create model
-    print("\n[3/5] Creating model...")
-    # Calculate prototypes based on log of class counts
-    n_class0 = int(np.ceil(np.log2(len(train_target[train_target == 0]))))
-    n_class1 = int(np.ceil(np.log2(len(train_target[train_target == 1]))))
+    print("\n[3/5] Creating PTaRL model...")
     
-    # Update config
-    config.n_prototypes = n_class0 + n_class1
-    # Add n_prototypes_per_class attribute to config for ClassBalancedPrototypeNetwork
-    config.n_prototypes_per_class = n_class0
-    
-    # Use ClassBalancedPrototypeNetwork to fix the prototype imbalance issue
-    # This ensures prototypes are distributed across both Default and Non-Default classes
-    model = create_class_balanced_model_from_config(config)
+    # Use PTaRL model for two-phase learning:
+    # Phase 1: Local prototype learning
+    # Phase 2: Global prototype space calibration
+    model = create_ptarl_model_from_config(config)
     
     # Count parameters
     total_params = sum(p.numel() for p in model.parameters())
@@ -189,18 +182,22 @@ def main():
     print(f"    - Hidden dim: {config.d_model}")
     print(f"    - Attention heads: {config.n_heads}")
     print(f"    - Transformer layers: {config.n_layers}")
-    print(f"\n  Class-Balanced Prototype Layer:")
-    print(f"    - Total prototypes: {config.n_prototypes}")
-    print(f"    - Per class: {config.n_prototypes_per_class} Non-Default (Class 0), {config.n_prototypes - config.n_prototypes_per_class} Default (Class 1)")
+    print(f"\n  PTaRL Architecture:")
+    print(f"    - Local prototypes: {config.n_prototypes}")
+    print(f"    - Global prototypes: {model.n_global_prototypes}")
+    print(f"    - Phase 1 epochs: {config.phase1_epochs}")
+    print(f"    - Phase 2 epochs: {config.phase2_epochs}")
     print(f"    - Similarity type: {config.similarity_type}")
     
-    # Train
-    print("\n[4/5] Training model...")
+    # Train with PTaRL two-phase learning
+    print("\n[4/5] Training PTaRL model (Two-Phase)...")
     print("-"*60)
     
     save_path = os.path.join(args.save_dir, 'best_model.pt')
-    # Use class-balanced training to maintain prototype distribution
-    model, history = train_class_balanced_model(
+    # PTaRL training:
+    # Phase 1: Standard supervised learning with local prototypes
+    # Phase 2: Space calibration with global prototypes
+    model, history = train_ptarl_model(
         model=model,
         train_loader=train_loader,
         val_loader=val_loader,

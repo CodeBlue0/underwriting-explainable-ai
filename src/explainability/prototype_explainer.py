@@ -56,7 +56,12 @@ class PrototypeExplainer:
             return self._decoded_prototypes
         
         with torch.no_grad():
-            prototypes = self.model.prototype_layer.prototypes  # (P, D)
+            # Handle PTaRL Phase 2
+            if hasattr(self.model, 'phase') and self.model.phase == 2:
+                prototypes = self.model.global_prototype_layer.prototypes
+            else:
+                prototypes = self.model.prototype_layer.prototypes
+            
             num_recon, cat_logits = self.model.decoder(prototypes)
             
             # Convert to numpy and inverse transform
@@ -114,6 +119,25 @@ class PrototypeExplainer:
         # Get model explanation
         explanation = self.model.get_explanation(x_num_t, x_cat_t, top_k=top_k)
         
+        # Compute classifier weights for interpretation
+        if hasattr(self.model, 'phase') and self.model.phase == 2:
+            weights = self.model.pspace_classifier.weight.squeeze(-1).detach().cpu().numpy()
+        else:
+            weights = self.model.classifier.weight.squeeze(-1).detach().cpu().numpy()
+        explanation['prototype_weights'] = weights.tolist()
+
+        # Handle PTaRL Phase 2 explanation structure
+        if 'top_global_prototypes' in explanation:
+            # Map global prototypes to standard format
+            explanation['top_prototypes'] = []
+            for p in explanation['top_global_prototypes']:
+                explanation['top_prototypes'].append({
+                    'index': p['index'],
+                    'similarity': p['coordinate'],  # Use coordinate as similarity measure
+                    'weight': float(weights[p['index']]),  # Use actual weight
+                    'contribution': p['coordinate']
+                })
+        
         # Get decoded prototype features
         decoded_prototypes = self.get_decoded_prototypes()
         
@@ -147,7 +171,10 @@ class PrototypeExplainer:
         explanation['input_features'] = input_features
         
         # Compute classifier weights for interpretation
-        weights = self.model.classifier.weight.squeeze(-1).detach().cpu().numpy()
+        if hasattr(self.model, 'phase') and self.model.phase == 2:
+            weights = self.model.pspace_classifier.weight.squeeze(-1).detach().cpu().numpy()
+        else:
+            weights = self.model.classifier.weight.squeeze(-1).detach().cpu().numpy()
         explanation['prototype_weights'] = weights.tolist()
         
         return explanation
@@ -183,7 +210,11 @@ class PrototypeExplainer:
             Dict mapping prototype index to summary info
         """
         decoded = self.get_decoded_prototypes()
-        weights = self.model.classifier.weight.squeeze(-1).detach().cpu().numpy()
+        
+        if hasattr(self.model, 'phase') and self.model.phase == 2:
+            weights = self.model.pspace_classifier.weight.squeeze(-1).detach().cpu().numpy()
+        else:
+            weights = self.model.classifier.weight.squeeze(-1).detach().cpu().numpy()
         
         summary = {}
         for i in range(self.model.n_prototypes):

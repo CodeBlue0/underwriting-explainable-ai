@@ -201,7 +201,8 @@ class ClassBalancedPrototypeLayer(nn.Module):
         n_prototypes_per_class: Optional[int] = None,
         similarity_type: str = 'rbf',
         rbf_sigma: float = 1.0,
-        class_separation_weight: float = 0.1
+        class_separation_weight: float = 0.1,
+        random_seed: int = 42
     ):
         """
         Args:
@@ -211,12 +212,14 @@ class ClassBalancedPrototypeLayer(nn.Module):
             similarity_type: 'rbf' or 'cosine' similarity
             rbf_sigma: Sigma for RBF kernel
             class_separation_weight: Weight for class separation loss
+            random_seed: Random seed for KMeans initialization
         """
         super().__init__()
         self.n_prototypes = n_prototypes
         self.prototype_dim = prototype_dim
         self.similarity_type = similarity_type
         self.class_separation_weight = class_separation_weight
+        self.random_seed = random_seed
         
         # Split prototypes between classes
         self.n_per_class = n_prototypes_per_class or (n_prototypes // 2)
@@ -267,7 +270,7 @@ class ClassBalancedPrototypeLayer(nn.Module):
         # Class 0 (Non-Default) prototypes
         mask_class0 = labels_np == 0
         if mask_class0.sum() >= self.n_class0:
-            kmeans0 = KMeans(n_clusters=self.n_class0, random_state=42, n_init='auto')
+            kmeans0 = KMeans(n_clusters=self.n_class0, random_state=self.random_seed, n_init='auto')
             kmeans0.fit(embeddings_np[mask_class0])
             centers0 = kmeans0.cluster_centers_
         else:
@@ -285,7 +288,7 @@ class ClassBalancedPrototypeLayer(nn.Module):
         # Class 1 (Default) prototypes
         mask_class1 = labels_np == 1
         if mask_class1.sum() >= self.n_class1:
-            kmeans1 = KMeans(n_clusters=self.n_class1, random_state=42, n_init='auto')
+            kmeans1 = KMeans(n_clusters=self.n_class1, random_state=self.random_seed, n_init='auto')
             kmeans1.fit(embeddings_np[mask_class1])
             centers1 = kmeans1.cluster_centers_
         else:

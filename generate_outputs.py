@@ -24,7 +24,8 @@ from src.data.preprocessor import LoanDataPreprocessor
 from src.models.model import (
     PrototypeNetwork, 
     create_model_from_config,
-    create_class_balanced_model_from_config
+    create_class_balanced_model_from_config,
+    create_ptarl_model_from_config
 )
 
 
@@ -50,11 +51,22 @@ def load_model_and_preprocessor(checkpoint_dir: str = '/workspace/checkpoints'):
         config.n_prototypes = n_prototypes
         print(f"  Inferred n_prototypes: {n_prototypes}")
     
-    # Check if it's a ClassBalancedPrototypeNetwork
-    # ClassBalancedPrototypeLayer has 'prototype_classes' buffer
+    # Check model type
+    is_ptarl = 'global_prototype_layer.prototypes' in state_dict
     is_class_balanced = any('prototype_classes' in k for k in state_dict.keys())
     
-    if is_class_balanced:
+    if is_ptarl:
+        print("  Detected PTaRL structure")
+        # Infer global/local prototypes
+        if 'global_prototype_layer.prototypes' in state_dict:
+            config.n_global_prototypes = state_dict['global_prototype_layer.prototypes'].shape[0]
+            
+        model = create_ptarl_model_from_config(config)
+        # Force phase to 2 for evaluation/generation if it's a PTaRL model
+        if hasattr(model, 'set_second_phase'):
+            model.set_second_phase()
+            
+    elif is_class_balanced:
         print("  Detected ClassBalancedPrototypeNetwork structure")
         # Infer n_prototypes_per_class (Class 0) from prototype_classes buffer
         proto_classes = state_dict['prototype_layer.prototype_classes']

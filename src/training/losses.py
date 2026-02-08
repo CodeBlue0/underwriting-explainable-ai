@@ -79,7 +79,13 @@ class PrototypeLoss(nn.Module):
         loss_diversity = prototype_layer.diversity_loss()
         
         # 4. Clustering loss (encourage samples to be near prototypes)
-        loss_clustering = prototype_layer.clustering_loss(outputs['z'])
+        # Handle ClassBalancedPrototypeLayer which requires labels
+        import inspect
+        sig = inspect.signature(prototype_layer.clustering_loss)
+        if 'labels' in sig.parameters:
+            loss_clustering = prototype_layer.clustering_loss(outputs['z'], targets)
+        else:
+            loss_clustering = prototype_layer.clustering_loss(outputs['z'])
         
         # Total loss
         total_loss = (
@@ -235,12 +241,14 @@ class PTaRLLoss(nn.Module):
                + projection_weight * L_projection
                + diversifying_weight * L_diversifying
                + orthogonalization_weight * L_orthogonalization
+               + reconstruction_weight * L_reconstruction  # NEW: Keep decoder aligned
     
     Components:
     1. Task Loss: BCE classification loss
     2. Projection Loss: Sinkhorn + L1 reconstruction in P-Space
     3. Diversifying Loss: Contrastive-inspired coordinate alignment
     4. Orthogonalization Loss: Prototype independence
+    5. Reconstruction Loss: Feature reconstruction to keep decoder aligned with encoder
     """
     
     def __init__(
@@ -249,6 +257,7 @@ class PTaRLLoss(nn.Module):
         projection_weight: float = 1.0,
         diversifying_weight: float = 0.5,
         orthogonalization_weight: float = 2.5,
+        reconstruction_weight: float = 0.1,  # NEW: Reconstruction weight
         sinkhorn_eps: float = 0.1,
         sinkhorn_max_iter: int = 50
     ):
@@ -257,8 +266,11 @@ class PTaRLLoss(nn.Module):
         self.projection_weight = projection_weight
         self.diversifying_weight = diversifying_weight
         self.orthogonalization_weight = orthogonalization_weight
+        self.reconstruction_weight = reconstruction_weight  # NEW
         
         self.bce_loss = nn.BCEWithLogitsLoss()
+        self.mse_loss = nn.MSELoss()  # NEW
+        self.ce_loss = nn.CrossEntropyLoss()  # NEW
         
         # Import Sinkhorn
         from ..utils.sinkhorn import SinkhornDistance
@@ -295,11 +307,42 @@ class PTaRLLoss(nn.Module):
         
         return sinkhorn_loss + l1_loss
     
+    def reconstruction_loss(
+        self,
+        outputs: Dict[str, torch.Tensor],
+        x_num: torch.Tensor,
+        x_cat: torch.Tensor
+    ) -> torch.Tensor:
+        """
+        Compute feature reconstruction loss to keep decoder aligned.
+        
+        Args:
+            outputs: Model outputs containing num_recon and cat_recons
+            x_num: Original numerical features
+            x_cat: Original categorical features
+            
+        Returns:
+            Reconstruction loss
+        """
+        # Numerical reconstruction
+        loss_num = self.mse_loss(outputs['num_recon'], x_num)
+        
+        # Categorical reconstruction
+        loss_cat = torch.tensor(0.0, device=x_num.device)
+        for i, cat_logits in enumerate(outputs['cat_recons']):
+            loss_cat = loss_cat + self.ce_loss(cat_logits, x_cat[:, i])
+        if len(outputs['cat_recons']) > 0:
+            loss_cat = loss_cat / len(outputs['cat_recons'])
+        
+        return loss_num + loss_cat
+    
     def forward(
         self,
         outputs: Dict[str, torch.Tensor],
         targets: torch.Tensor,
-        global_prototype_layer
+        global_prototype_layer,
+        x_num: torch.Tensor = None,  # NEW: For reconstruction loss
+        x_cat: torch.Tensor = None   # NEW: For reconstruction loss
     ) -> Dict[str, torch.Tensor]:
         """
         Compute PTaRL losses for Phase 2.
@@ -308,6 +351,8 @@ class PTaRLLoss(nn.Module):
             outputs: Model output dictionary with z, coordinates, p_space, logits
             targets: (batch_size,) target labels
             global_prototype_layer: GlobalPrototypeLayer for orthogonalization
+            x_num: Original numerical features (for reconstruction)
+            x_cat: Original categorical features (for reconstruction)
             
         Returns:
             Dictionary of losses including 'total' loss
@@ -335,12 +380,19 @@ class PTaRLLoss(nn.Module):
         # 4. Orthogonalization loss
         loss_orthogonalization = global_prototype_layer.orthogonalization_loss()
         
+        # 5. Reconstruction loss (NEW)
+        if x_num is not None and x_cat is not None and 'num_recon' in outputs:
+            loss_reconstruction = self.reconstruction_loss(outputs, x_num, x_cat)
+        else:
+            loss_reconstruction = torch.tensor(0.0, device=targets.device)
+        
         # Total loss
         total_loss = (
             self.task_weight * loss_task
             + self.projection_weight * loss_projection
             + self.diversifying_weight * loss_diversifying
             + self.orthogonalization_weight * loss_orthogonalization
+            + self.reconstruction_weight * loss_reconstruction  # NEW
         )
         
         return {
@@ -348,6 +400,7 @@ class PTaRLLoss(nn.Module):
             'task': loss_task,
             'projection': loss_projection,
             'diversifying': loss_diversifying,
-            'orthogonalization': loss_orthogonalization
+            'orthogonalization': loss_orthogonalization,
+            'reconstruction': loss_reconstruction  # NEW
         }
 

@@ -460,10 +460,10 @@ def create_class_balanced_model_from_config(config) -> ClassBalancedPrototypeNet
 
 class PrototypeNetworkPTaRL(nn.Module):
     """
-    PTaRL-enhanced Prototype Network.
+    PTaRL-enhanced Prototype Network with Class-Balanced Local Prototypes.
     
     Implements two-phase learning:
-    - Phase 1: Standard supervised learning with the backbone
+    - Phase 1: Supervised learning with class-balanced local prototypes
     - Phase 2: Space Calibration with global prototypes and P-Space
     
     Architecture (Phase 2):
@@ -483,6 +483,7 @@ class PrototypeNetworkPTaRL(nn.Module):
         d_ffn: int = 128,
         n_global_prototypes: Optional[int] = None,
         n_local_prototypes: int = 10,
+        n_prototypes_per_class: Optional[int] = None,  # NEW: Class-balanced prototypes
         similarity_type: str = 'rbf',
         rbf_sigma: float = 1.0,
         decoder_hidden_dim: int = 128,
@@ -531,15 +532,22 @@ class PrototypeNetworkPTaRL(nn.Module):
             dropout=dropout
         )
         
-        # 2. Local prototype layer (for Phase 1, optional use in Phase 2)
-        from .prototype_layer import PrototypeLayer, ClassificationHead, GlobalPrototypeLayer, Projector
+        # 2. Class-Balanced Local Prototype Layer (for Phase 1)
+        from .prototype_layer import ClassBalancedPrototypeLayer, ClassificationHead, GlobalPrototypeLayer, Projector
         
-        self.prototype_layer = PrototypeLayer(
+        self.n_local_prototypes = n_local_prototypes
+        self.n_prototypes_per_class = n_prototypes_per_class or (n_local_prototypes // 2)
+        
+        self.prototype_layer = ClassBalancedPrototypeLayer(
             n_prototypes=n_local_prototypes,
             prototype_dim=d_model,
+            n_prototypes_per_class=self.n_prototypes_per_class,
             similarity_type=similarity_type,
-            rbf_sigma=rbf_sigma
+            rbf_sigma=rbf_sigma,
+            random_seed=random_seed
         )
+        
+        self._local_prototypes_initialized = False
         
         # 3. Global Prototype Layer (for Phase 2 - PTaRL)
         self.global_prototype_layer = GlobalPrototypeLayer(
@@ -578,6 +586,13 @@ class PrototypeNetworkPTaRL(nn.Module):
         self._phase = 1  # 1 or 2
     
     @property
+    def n_prototypes(self) -> int:
+        """Return number of prototypes based on current phase."""
+        if self._phase == 2:
+            return self.n_global_prototypes
+        return self.n_local_prototypes
+    
+    @property
     def phase(self) -> int:
         return self._phase
     
@@ -596,6 +611,17 @@ class PrototypeNetworkPTaRL(nn.Module):
     def initialize_global_prototypes(self, embeddings: torch.Tensor):
         """Initialize global prototypes from embeddings using KMeans."""
         self.global_prototype_layer.initialize_from_embeddings(embeddings)
+    
+    def initialize_local_prototypes(self, embeddings: torch.Tensor, labels: torch.Tensor):
+        """
+        Initialize local class-balanced prototypes using class-stratified KMeans.
+        
+        Args:
+            embeddings: (N, D) embeddings from training data
+            labels: (N,) class labels (0 or 1)
+        """
+        self.prototype_layer.initialize_from_data(embeddings, labels)
+        self._local_prototypes_initialized = True
     
     def first_phase_forward(
         self,

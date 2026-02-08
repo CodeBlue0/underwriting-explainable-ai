@@ -513,19 +513,26 @@ class PTaRLTrainer:
     
     def _collect_embeddings(self) -> torch.Tensor:
         """Collect all embeddings from training data for KMeans initialization."""
+        embeddings, _ = self._collect_embeddings_and_labels()
+        return embeddings
+    
+    def _collect_embeddings_and_labels(self) -> tuple:
+        """Collect all embeddings and labels from training data."""
         self.model.eval()
         embeddings = []
+        labels = []
         
         with torch.no_grad():
             for batch in self.train_loader:
-                x_num, x_cat, _ = batch
+                x_num, x_cat, targets = batch
                 x_num = x_num.to(self.device)
                 x_cat = x_cat.to(self.device)
                 
                 z = self.model.generate_embeddings(x_num, x_cat)
                 embeddings.append(z.cpu())
+                labels.append(targets)
         
-        return torch.cat(embeddings, dim=0)
+        return torch.cat(embeddings, dim=0), torch.cat(labels, dim=0)
     
     def train_phase1_epoch(self) -> Dict[str, float]:
         """Train one epoch in Phase 1."""
@@ -574,7 +581,9 @@ class PTaRLTrainer:
             
             losses = self.phase2_criterion(
                 outputs, targets,
-                self.model.global_prototype_layer
+                self.model.global_prototype_layer,
+                x_num=x_num,  # NEW: For reconstruction loss
+                x_cat=x_cat   # NEW: For reconstruction loss
             )
             
             losses['total'].backward()
@@ -618,7 +627,9 @@ class PTaRLTrainer:
             else:
                 losses = self.phase2_criterion(
                     outputs, targets,
-                    self.model.global_prototype_layer
+                    self.model.global_prototype_layer,
+                    x_num=x_num,
+                    x_cat=x_cat
                 )
             
             total_loss += losses['total'].item()
@@ -654,6 +665,12 @@ class PTaRLTrainer:
         self.current_phase = phase
         
         if phase == 1:
+            # Initialize class-balanced local prototypes before Phase 1
+            if hasattr(self.model, 'initialize_local_prototypes') and not getattr(self.model, '_local_prototypes_initialized', False):
+                if verbose:
+                    print("Initializing class-balanced local prototypes via KMeans...")
+                embeddings, labels = self._collect_embeddings_and_labels()
+                self.model.initialize_local_prototypes(embeddings, labels)
             self.model.set_first_phase()
         else:
             # Initialize global prototypes via KMeans

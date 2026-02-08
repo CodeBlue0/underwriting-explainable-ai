@@ -67,7 +67,7 @@ class ModelConfig:
     
     # Loss weights
     lambda_reconstruction: float = 0.1
-    lambda_diversity: float = 0.5  # Drastically increased to force separation
+    lambda_diversity: float = 1  # Drastically increased to force separation
     lambda_clustering: float = 0.01  # Reduced to prevent clumping
     
     # Paths
