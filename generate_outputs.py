@@ -2,9 +2,11 @@
 """
 Generate t-SNE visualization from trained model.
 
+Supports both Loan and ICR datasets via --dataset flag.
+
 Usage:
-    python generate_outputs.py --checkpoint /workspace/checkpoints/icr/best_model_phase1.pt --phase 1
-    python generate_outputs.py --checkpoint /workspace/checkpoints/icr/best_model_phase2.pt --phase 2
+    python generate_outputs.py --dataset icr --checkpoint /workspace/checkpoints/icr/best_model_phase1.pt --phase 1
+    python generate_outputs.py --dataset loan --checkpoint /workspace/checkpoints/loan/best_model_phase2.pt --phase 2
 """
 import argparse
 import os
@@ -20,18 +22,36 @@ matplotlib.use('Agg')
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent))
 
-from src.icr_config import ICRConfig
 from src.models.model import create_model_from_config
 from src.utils.visualization import create_tsne_visualization
 
 
+def get_config_for_dataset(dataset: str):
+    """Get the appropriate config for the dataset."""
+    if dataset == 'loan':
+        from src.config import get_default_config
+        return get_default_config()
+    elif dataset == 'icr':
+        from src.icr_config import ICRConfig
+        return ICRConfig()
+    else:
+        raise ValueError(f"Unknown dataset: {dataset}")
+
+
 def load_model_and_preprocessor(
-    checkpoint_dir: str = '/workspace/checkpoints',
+    dataset: str,
+    checkpoint_dir: str = None,
     model_path: str = None,
     force_phase: int = None
 ):
     """Load trained model and preprocessor."""
-    # Infer checkpoint_dir from model_path
+    config = get_config_for_dataset(dataset)
+    
+    # Resolve checkpoint_dir
+    if checkpoint_dir is None:
+        checkpoint_dir = config.model_save_path
+    
+    # Infer checkpoint_dir from model_path if preprocessor exists there
     if model_path:
         model_dir = os.path.dirname(model_path)
         if os.path.exists(os.path.join(model_dir, 'preprocessor.pkl')):
@@ -40,13 +60,12 @@ def load_model_and_preprocessor(
     # Load preprocessor
     preprocessor_path = os.path.join(checkpoint_dir, 'preprocessor.pkl')
     if not os.path.exists(preprocessor_path):
-        preprocessor_path = os.path.join(checkpoint_dir, 'icr', 'preprocessor.pkl')
+        # Fallback: check subdirectory named after dataset
+        preprocessor_path = os.path.join(checkpoint_dir, dataset, 'preprocessor.pkl')
         
     with open(preprocessor_path, 'rb') as f:
         preprocessor = pickle.load(f)
     
-    # Config
-    config = ICRConfig()
     config.categorical_cardinalities = preprocessor.get_cardinalities()
     
     if hasattr(preprocessor, 'numerical_features'):
@@ -54,11 +73,16 @@ def load_model_and_preprocessor(
     
     # Load checkpoint
     if model_path is None:
-        phase2_path = os.path.join(checkpoint_dir, 'best_model_phase2.pt')
-        model_path = phase2_path if os.path.exists(phase2_path) else os.path.join(checkpoint_dir, 'best_model.pt')
+        for name in ['best_model_phase2.pt', 'best_model_phase1.pt', 'best_model.pt']:
+            candidate = os.path.join(checkpoint_dir, name)
+            if os.path.exists(candidate):
+                model_path = candidate
+                break
+        if model_path is None:
+            raise FileNotFoundError(f"No checkpoint found in {checkpoint_dir}")
     
     print(f"  Loading checkpoint: {model_path}")
-    checkpoint = torch.load(model_path, map_location='cpu')
+    checkpoint = torch.load(model_path, map_location='cpu', weights_only=False)
     state_dict = checkpoint['model_state_dict']
     
     # Infer prototype counts from state_dict
@@ -87,14 +111,16 @@ def load_model_and_preprocessor(
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Generate t-SNE visualization')
+    parser.add_argument('--dataset', type=str, choices=['loan', 'icr'], required=True,
+                        help='Dataset to visualize: loan or icr')
     parser.add_argument('--checkpoint', type=str, default=None,
                         help='Path to model checkpoint')
     parser.add_argument('--phase', type=int, choices=[1, 2], default=None,
                         help='Force model phase (1 or 2)')
     parser.add_argument('--output-dir', type=str, default='/workspace/underwriting-explainable-ai',
                         help='Output directory for visualization files')
-    parser.add_argument('--checkpoint-dir', type=str, default='/workspace/checkpoints',
-                        help='Directory containing preprocessor.pkl')
+    parser.add_argument('--checkpoint-dir', type=str, default=None,
+                        help='Directory containing preprocessor.pkl (auto-detected if not provided)')
     return parser.parse_args()
 
 
@@ -102,12 +128,13 @@ def main():
     args = parse_args()
     
     print("=" * 60)
-    print("GENERATING T-SNE VISUALIZATION")
+    print(f"GENERATING T-SNE VISUALIZATION ({args.dataset.upper()})")
     print("=" * 60)
     
     # [1/3] Load model and preprocessor
     print("\n[1/3] Loading model and preprocessor...")
     model, preprocessor, config = load_model_and_preprocessor(
+        dataset=args.dataset,
         checkpoint_dir=args.checkpoint_dir,
         model_path=args.checkpoint,
         force_phase=args.phase
@@ -117,42 +144,38 @@ def main():
     
     # [2/3] Load training data
     print("\n[2/3] Loading training data...")
-    train_path = getattr(config, 'train_path', '/workspace/data/icr/train.csv')
-    if not os.path.exists(train_path):
-        train_path = '/workspace/data/train.csv'
-    
+    train_path = config.train_path
     print(f"  Training data path: {train_path}")
     train_df = pd.read_csv(train_path)
     
     # Find target column
-    target_col = getattr(config, 'target_column', 'Class')
-    if target_col not in train_df.columns:
-        if 'Class' in train_df.columns:
-            target_col = 'Class'
-        elif 'loan_status' in train_df.columns:
-            target_col = 'loan_status'
+    if args.dataset == 'icr':
+        target_col = getattr(config, 'target_column', 'Class')
+    else:
+        target_col = 'loan_status'
     
     train_labels = train_df[target_col].values
     X_num_train, X_cat_train = preprocessor.transform(train_df)
     print(f"  Loaded {len(train_df)} training samples")
     
-    # Merge Greeks for Alpha labels
-    if 'Alpha' not in train_df.columns:
-        greeks_path = getattr(config, 'greeks_path', '/workspace/data/icr/greeks.csv')
-        if os.path.exists(greeks_path):
-            print(f"  Loading Greeks from {greeks_path} to get Alpha...")
-            greeks_df = pd.read_csv(greeks_path)
-            if 'Id' in train_df.columns and 'Id' in greeks_df.columns:
-                train_df = pd.merge(train_df, greeks_df[['Id', 'Alpha']], on='Id', how='left')
-
     # Prepare labels dictionary
     labels_dict = {'Class': train_labels}
     
-    if 'Alpha' in train_df.columns:
-        print("  Found 'Alpha' column. Adding to visualization labels.")
-        labels_dict['Alpha'] = train_df['Alpha'].fillna('N/A').values
-    else:
-        print("  'Alpha' column not found. Skipping Alpha visualization.")
+    # ICR-specific: merge Alpha labels from greeks.csv
+    if args.dataset == 'icr':
+        if 'Alpha' not in train_df.columns:
+            greeks_path = getattr(config, 'greeks_path', '/workspace/data/icr/greeks.csv')
+            if os.path.exists(greeks_path):
+                print(f"  Loading Greeks from {greeks_path} to get Alpha...")
+                greeks_df = pd.read_csv(greeks_path)
+                if 'Id' in train_df.columns and 'Id' in greeks_df.columns:
+                    train_df = pd.merge(train_df, greeks_df[['Id', 'Alpha']], on='Id', how='left')
+        
+        if 'Alpha' in train_df.columns:
+            print("  Found 'Alpha' column. Adding to visualization labels.")
+            labels_dict['Alpha'] = train_df['Alpha'].fillna('N/A').values
+        else:
+            print("  'Alpha' column not found. Skipping Alpha visualization.")
         
     # [3/3] Create t-SNE visualization
     print(f"\n[3/3] Creating t-SNE visualizations (Phase {phase})...")

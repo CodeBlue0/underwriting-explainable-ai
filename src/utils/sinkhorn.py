@@ -94,8 +94,9 @@ class SinkhornDistance(nn.Module):
         u = torch.zeros(B, device=device)
         v = torch.zeros(K, device=device)
         
-        # Kernel matrix
-        K_mat = torch.exp(-C / self.eps)  # (B, K)
+        # Kernel matrix (clamp cost to prevent overflow in exp)
+        C_clamped = C.clamp(min=0, max=50 * self.eps)
+        K_mat = torch.exp(-C_clamped / self.eps)  # (B, K)
         
         for _ in range(self.max_iter):
             u = torch.log(mu + 1e-8) - torch.logsumexp(
@@ -104,14 +105,25 @@ class SinkhornDistance(nn.Module):
             v = torch.log(nu + 1e-8) - torch.logsumexp(
                 torch.log(K_mat.t() + 1e-8) + u.unsqueeze(0), dim=1
             )
+            # Guard against NaN/Inf
+            if torch.isnan(u).any() or torch.isnan(v).any():
+                u = torch.nan_to_num(u, nan=0.0, posinf=0.0, neginf=0.0)
+                v = torch.nan_to_num(v, nan=0.0, posinf=0.0, neginf=0.0)
+                break
         
         # Compute transport plan
-        pi = torch.exp(u.unsqueeze(1) + torch.log(K_mat + 1e-8) + v.unsqueeze(0))
+        log_pi = u.unsqueeze(1) + torch.log(K_mat + 1e-8) + v.unsqueeze(0)
+        log_pi = log_pi.clamp(min=-50, max=50)  # Prevent extreme values
+        pi = torch.exp(log_pi)
         
         # Weighted Sinkhorn distance using coordinates as weights
         # Weight the cost by the absolute coordinates (importance of each prototype)
         coord_weights = torch.softmax(coordinates.abs(), dim=1)  # (B, K)
         weighted_cost = (pi * C * coord_weights).sum()
+        
+        # Final NaN guard
+        if torch.isnan(weighted_cost) or torch.isinf(weighted_cost):
+            weighted_cost = torch.tensor(0.0, device=x.device, requires_grad=True)
         
         return weighted_cost
 

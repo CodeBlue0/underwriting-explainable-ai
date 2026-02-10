@@ -141,7 +141,9 @@ class ReconstructionLoss(nn.Module):
         # Categorical reconstruction loss (mean CE across all categorical features)
         cat_losses = []
         for i, cat_logits in enumerate(cat_recons):
-            cat_losses.append(self.ce_loss(cat_logits, cat_target[:, i]))
+            n_classes = cat_logits.shape[1]
+            target_i = cat_target[:, i].clamp(0, n_classes - 1)
+            cat_losses.append(self.ce_loss(cat_logits, target_i))
         cat_loss = torch.stack(cat_losses).mean() if cat_losses else torch.tensor(0.0)
         
         # Combined loss

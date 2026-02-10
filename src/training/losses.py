@@ -70,7 +70,9 @@ class PrototypeLoss(nn.Module):
         
         loss_recon_cat = torch.tensor(0.0, device=x_num.device)
         for i, cat_logits in enumerate(outputs['cat_recons']):
-            loss_recon_cat = loss_recon_cat + self.ce_loss(cat_logits, x_cat[:, i])
+            n_classes = cat_logits.shape[1]
+            target_i = x_cat[:, i].clamp(0, n_classes - 1)
+            loss_recon_cat = loss_recon_cat + self.ce_loss(cat_logits, target_i)
         if len(outputs['cat_recons']) > 0:
             loss_recon_cat = loss_recon_cat / len(outputs['cat_recons'])
         
@@ -188,7 +190,9 @@ class PTaRLLoss(nn.Module):
         
         loss_cat = torch.tensor(0.0, device=x_num.device)
         for i, cat_logits in enumerate(outputs['cat_recons']):
-            loss_cat = loss_cat + self.ce_loss(cat_logits, x_cat[:, i])
+            n_classes = cat_logits.shape[1]
+            target_i = x_cat[:, i].clamp(0, n_classes - 1)
+            loss_cat = loss_cat + self.ce_loss(cat_logits, target_i)
         if len(outputs['cat_recons']) > 0:
             loss_cat = loss_cat / len(outputs['cat_recons'])
         

@@ -71,9 +71,9 @@ class ModelConfig:
     lambda_clustering: float = 0.01  # Reduced to prevent clumping
     
     # Paths
-    train_path: str = '/workspace/data/train.csv'
-    test_path: str = '/workspace/data/test.csv'
-    model_save_path: str = '/workspace/checkpoints'
+    train_path: str = '/workspace/data/loan/train.csv'
+    test_path: str = '/workspace/data/loan/test.csv'
+    model_save_path: str = '/workspace/checkpoints/loan'
     
     # PTaRL Settings
     use_ptarl: bool = True  # Enable PTaRL two-phase training

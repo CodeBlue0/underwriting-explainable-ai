@@ -357,7 +357,7 @@ class Trainer:
             
             # Phase 2: Re-initialize encoder + train with P-Space (per PTaRL paper)
             if verbose:
-                print("Re-initializing encoder parameters for Phase 2 (start from scratch with P-Space)...")
+                print("Re-initializing encoder parameters for Phase 2 (start from scratch with P-Space as per PTaRL paper)...")
             self._reinitialize_encoder()
             
             self.model.set_second_phase()
