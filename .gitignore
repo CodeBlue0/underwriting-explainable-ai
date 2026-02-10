@@ -44,3 +44,9 @@ venv/
 .venv/
 env/
 .env/
+
+# Sensitive files
+kaggle.json
+
+# PDF docs
+architecture.pdf

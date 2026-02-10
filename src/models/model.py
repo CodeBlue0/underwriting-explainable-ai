@@ -14,7 +14,7 @@ import torch.nn as nn
 from typing import Dict, List, Optional, Any
 
 from .ft_transformer import FTTransformer
-from .prototype_layer import ClassBalancedPrototypeLayer, ClassificationHead, GlobalPrototypeLayer, Projector
+from .prototype_layer import GlobalPrototypeLayer, Projector
 from .decoder import FeatureDecoder
 
 
@@ -42,10 +42,6 @@ class PrototypeNetwork(nn.Module):
         n_layers: int = 3,
         d_ffn: int = 128,
         n_global_prototypes: Optional[int] = None,
-        n_local_prototypes: int = 10,
-        n_prototypes_per_class: Optional[int] = None,
-        similarity_type: str = 'rbf',
-        rbf_sigma: float = 1.0,
         decoder_hidden_dim: int = 128,
         dropout: float = 0.1,
         projector_layers: int = 3,
@@ -60,10 +56,6 @@ class PrototypeNetwork(nn.Module):
             n_layers: Number of transformer layers
             d_ffn: FFN dimension in transformer
             n_global_prototypes: Number of global prototypes (default: ceil(log2(n_features)))
-            n_local_prototypes: Number of local prototypes for Phase 1
-            n_prototypes_per_class: Number of prototypes per class (default: n_local_prototypes // 2)
-            similarity_type: 'rbf' or 'cosine' for local prototype similarity
-            rbf_sigma: Sigma for RBF kernel
             decoder_hidden_dim: Hidden dimension for decoder
             dropout: Dropout rate
             projector_layers: Number of layers in projector
@@ -91,29 +83,14 @@ class PrototypeNetwork(nn.Module):
             dropout=dropout
         )
         
-        # 2. Class-Balanced Local Prototype Layer (for Phase 1)
-        self.n_local_prototypes = n_local_prototypes
-        self.n_prototypes_per_class = n_prototypes_per_class or (n_local_prototypes // 2)
-        
-        self.prototype_layer = ClassBalancedPrototypeLayer(
-            n_prototypes=n_local_prototypes,
-            prototype_dim=d_model,
-            n_prototypes_per_class=self.n_prototypes_per_class,
-            similarity_type=similarity_type,
-            rbf_sigma=rbf_sigma,
-            random_seed=random_seed
-        )
-        
-        self._local_prototypes_initialized = False
-        
-        # 3. Global Prototype Layer (for Phase 2 - PTaRL)
+        # 2. Global Prototype Layer (for Phase 2 - PTaRL)
         self.global_prototype_layer = GlobalPrototypeLayer(
             n_prototypes=self.n_global_prototypes,
             prototype_dim=d_model,
             random_seed=random_seed
         )
         
-        # 4. Projector (for Phase 2 - PTaRL)
+        # 3. Projector (for Phase 2 - PTaRL)
         self.projector = Projector(
             emb_dim=d_model,
             n_prototypes=self.n_global_prototypes,
@@ -121,17 +98,11 @@ class PrototypeNetwork(nn.Module):
             dropout=dropout
         )
         
-        # 5. Classification Heads
+        # 4. Classification Heads
         # Phase 1: Simple linear classifier on embeddings (per PTaRL paper)
         self.phase1_classifier = nn.Linear(d_model, 1)
         nn.init.xavier_uniform_(self.phase1_classifier.weight)
         nn.init.constant_(self.phase1_classifier.bias, -2.0)  # Initialize for imbalanced data
-        
-        # Prototype-based classifier (kept for compatibility, used in explanations)
-        self.classifier = ClassificationHead(
-            n_prototypes=n_local_prototypes,
-            n_classes=1
-        )
         
         # Phase 2: P-Space classifier
         self.pspace_classifier = nn.Linear(d_model, 1)
@@ -151,10 +122,10 @@ class PrototypeNetwork(nn.Module):
     
     @property
     def n_prototypes(self) -> int:
-        """Return number of prototypes based on current phase."""
+        """Return number of prototypes (only global in Phase 2)."""
         if self._phase == 2:
             return self.n_global_prototypes
-        return self.n_local_prototypes
+        return 0
     
     @property
     def phase(self) -> int:
@@ -175,17 +146,6 @@ class PrototypeNetwork(nn.Module):
     def initialize_global_prototypes(self, embeddings: torch.Tensor):
         """Initialize global prototypes from embeddings using KMeans."""
         self.global_prototype_layer.initialize_from_embeddings(embeddings)
-    
-    def initialize_local_prototypes(self, embeddings: torch.Tensor, labels: torch.Tensor):
-        """
-        Initialize local class-balanced prototypes using class-stratified KMeans.
-        
-        Args:
-            embeddings: (N, D) embeddings from training data
-            labels: (N,) class labels (0 or 1)
-        """
-        self.prototype_layer.initialize_from_data(embeddings, labels)
-        self._local_prototypes_initialized = True
     
     def first_phase_forward(
         self,
@@ -288,26 +248,14 @@ class PrototypeNetwork(nn.Module):
             output = self.forward(x_num, x_cat, return_all=True)
             
             if self._phase == 1:
-                similarities = output['similarities'][0]
-                contributions = output['contributions'][0]
-                top_values, top_indices = similarities.topk(top_k)
-                weights = self.classifier.weight.squeeze(-1)
-                
+                # Phase 1 without prototypes (Standard Supervised)
                 explanation = {
                     'prediction': output['probabilities'][0].item(),
                     'logit': output['logits'][0].item(),
                     'phase': 1,
-                    'top_prototypes': [
-                        {
-                            'index': idx.item(),
-                            'similarity': similarities[idx].item(),
-                            'weight': weights[idx].item(),
-                            'contribution': contributions[idx].item()
-                        }
-                        for idx in top_indices
-                    ],
-                    'all_similarities': similarities.cpu().numpy(),
-                    'latent_z': output['z'][0].cpu().numpy()
+                    'top_prototypes': [],
+                    'latent_z': output['z'][0].cpu().numpy(),
+                    'note': 'Phase 1 does not use prototypes for explanation.'
                 }
             else:
                 coordinates = output['coordinates'][0]
@@ -352,9 +300,6 @@ def create_model_from_config(config) -> PrototypeNetwork:
         n_layers=config.n_layers,
         d_ffn=config.d_ffn,
         n_global_prototypes=n_global,
-        n_local_prototypes=config.n_prototypes,
-        similarity_type=config.similarity_type,
-        rbf_sigma=config.rbf_sigma,
         decoder_hidden_dim=config.decoder_hidden_dim,
         dropout=config.dropout,
         random_seed=config.seed

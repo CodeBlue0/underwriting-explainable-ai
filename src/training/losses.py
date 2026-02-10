@@ -24,11 +24,15 @@ class PrototypeLoss(nn.Module):
     def __init__(
         self,
         lambda_reconstruction: float = 0.1,
-        lambda_diversity: float = 0.01,  # Kept for backward compat, but unused
-        lambda_clustering: float = 0.05,  # Kept for backward compat, but unused
         num_weight: float = 1.0,
         cat_weight: float = 1.0
     ):
+        """
+        Args:
+            lambda_reconstruction: Weight for reconstruction loss
+            num_weight: Weight for numerical reconstruction
+            cat_weight: Weight for categorical reconstruction
+        """
         super().__init__()
         self.lambda_reconstruction = lambda_reconstruction
         self.num_weight = num_weight
@@ -43,8 +47,7 @@ class PrototypeLoss(nn.Module):
         outputs: Dict[str, torch.Tensor],
         targets: torch.Tensor,
         x_num: torch.Tensor,
-        x_cat: torch.Tensor,
-        prototype_layer=None  # Not used anymore, kept for backward compat
+        x_cat: torch.Tensor
     ) -> Dict[str, torch.Tensor]:
         """
         Compute Phase 1 losses.

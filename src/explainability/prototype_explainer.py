@@ -55,12 +55,15 @@ class PrototypeExplainer:
         if self._decoded_prototypes is not None:
             return self._decoded_prototypes
         
+        self._decoded_prototypes = {}
+        
+        # Phase 1 has no prototypes
+        if hasattr(self.model, 'phase') and self.model.phase == 1:
+            return self._decoded_prototypes
+            
         with torch.no_grad():
-            # Handle PTaRL Phase 2
-            if hasattr(self.model, 'phase') and self.model.phase == 2:
-                prototypes = self.model.global_prototype_layer.prototypes
-            else:
-                prototypes = self.model.prototype_layer.prototypes
+            # Phase 2: Global Prototypes
+            prototypes = self.model.global_prototype_layer.prototypes
             
             num_recon, cat_logits = self.model.decoder(prototypes)
             
@@ -76,11 +79,12 @@ class PrototypeExplainer:
             cat_labels = self.preprocessor.inverse_transform_categorical(cat_preds)
             
             # Build decoded prototypes dict
-            self._decoded_prototypes = {}
             num_names = self.preprocessor.numerical_features
             cat_names = self.preprocessor.categorical_features
             
-            for i in range(self.model.n_prototypes):
+            n_prototypes = self.model.n_global_prototypes
+            
+            for i in range(n_prototypes):
                 proto_features = {}
                 
                 # Numerical features
@@ -120,11 +124,11 @@ class PrototypeExplainer:
         explanation = self.model.get_explanation(x_num_t, x_cat_t, top_k=top_k)
         
         # Compute classifier weights for interpretation
+        weights = []
         if hasattr(self.model, 'phase') and self.model.phase == 2:
-            weights = self.model.pspace_classifier.weight.squeeze(-1).detach().cpu().numpy()
-        else:
-            weights = self.model.classifier.weight.squeeze(-1).detach().cpu().numpy()
-        explanation['prototype_weights'] = weights.tolist()
+            weights = self.model.pspace_classifier.weight.squeeze(-1).detach().cpu().numpy().tolist()
+        
+        explanation['prototype_weights'] = weights
 
         # Handle PTaRL Phase 2 explanation structure
         if 'top_global_prototypes' in explanation:
@@ -145,21 +149,23 @@ class PrototypeExplainer:
         decoded_prototypes = self.get_decoded_prototypes()
         
         # Enrich with prototype descriptions and features
-        for proto_info in explanation['top_prototypes']:
-            idx = proto_info['index']
-            
-            # Add description if available
-            if idx in self.prototype_descriptions:
-                proto_info['name_ko'] = self.prototype_descriptions[idx].get('ko', f'프로토타입 {idx}')
-                proto_info['name_en'] = self.prototype_descriptions[idx].get('en', f'Prototype {idx}')
-                proto_info['description_ko'] = self.prototype_descriptions[idx].get('description_ko', '')
-                proto_info['description_en'] = self.prototype_descriptions[idx].get('description_en', '')
-            else:
-                proto_info['name_ko'] = f'프로토타입 {idx}'
-                proto_info['name_en'] = f'Prototype {idx}'
-            
-            # Add decoded features
-            proto_info['features'] = decoded_prototypes[idx]
+        if 'top_prototypes' in explanation:
+            for proto_info in explanation['top_prototypes']:
+                idx = proto_info['index']
+                
+                # Add description if available
+                if idx in self.prototype_descriptions:
+                    proto_info['name_ko'] = self.prototype_descriptions[idx].get('ko', f'프로토타입 {idx}')
+                    proto_info['name_en'] = self.prototype_descriptions[idx].get('en', f'Prototype {idx}')
+                    proto_info['description_ko'] = self.prototype_descriptions[idx].get('description_ko', '')
+                    proto_info['description_en'] = self.prototype_descriptions[idx].get('description_en', '')
+                else:
+                    proto_info['name_ko'] = f'프로토타입 {idx}'
+                    proto_info['name_en'] = f'Prototype {idx}'
+                
+                # Add decoded features
+                if idx in decoded_prototypes:
+                    proto_info['features'] = decoded_prototypes[idx]
         
         # Get original scale input features
         num_original = self.preprocessor.inverse_transform_numerical(x_num.reshape(1, -1))[0]
@@ -172,13 +178,6 @@ class PrototypeExplainer:
             input_features[name] = cat_labels[name][0]
         
         explanation['input_features'] = input_features
-        
-        # Compute classifier weights for interpretation
-        if hasattr(self.model, 'phase') and self.model.phase == 2:
-            weights = self.model.pspace_classifier.weight.squeeze(-1).detach().cpu().numpy()
-        else:
-            weights = self.model.classifier.weight.squeeze(-1).detach().cpu().numpy()
-        explanation['prototype_weights'] = weights.tolist()
         
         return explanation
     
@@ -214,15 +213,20 @@ class PrototypeExplainer:
         """
         decoded = self.get_decoded_prototypes()
         
+        if not decoded:
+            return {}
+            
+        weights = []
         if hasattr(self.model, 'phase') and self.model.phase == 2:
             weights = self.model.pspace_classifier.weight.squeeze(-1).detach().cpu().numpy()
         else:
-            weights = self.model.classifier.weight.squeeze(-1).detach().cpu().numpy()
+            # Fallback (shouldn't happen in Phase 1 if decoded is empty)
+            return {}
         
         summary = {}
-        for i in range(self.model.n_prototypes):
+        for i in range(len(weights)):
             info = {
-                'features': decoded[i],
+                'features': decoded.get(i, {}),
                 'weight': float(weights[i])
             }
             

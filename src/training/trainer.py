@@ -13,6 +13,7 @@ import numpy as np
 from sklearn.metrics import roc_auc_score, accuracy_score, f1_score
 
 from .losses import PrototypeLoss, PTaRLLoss
+from src.utils.visualization import create_tsne_visualization
 
 
 class Trainer:
@@ -43,9 +44,7 @@ class Trainer:
         
         # Loss functions
         self.phase1_criterion = PrototypeLoss(
-            lambda_reconstruction=config.lambda_reconstruction,
-            lambda_diversity=config.lambda_diversity,
-            lambda_clustering=config.lambda_clustering
+            lambda_reconstruction=config.lambda_reconstruction
         )
         
         ptarl_weights = getattr(config, 'ptarl_weights', {
@@ -124,23 +123,95 @@ class Trainer:
             if hasattr(module, 'reset_parameters'):
                 module.reset_parameters()
 
-    def _collect_embeddings_and_labels(self) -> tuple:
+    def _collect_embeddings_and_labels(self):
         """Collect all embeddings and labels from training data."""
         self.model.eval()
-        embeddings = []
-        labels = []
+        all_embeddings = []
+        all_labels = []
         
         with torch.no_grad():
-            for batch in self.train_loader:
-                x_num, x_cat, targets = batch
+            for x_num, x_cat, y in self.train_loader:
                 x_num = x_num.to(self.device)
                 x_cat = x_cat.to(self.device)
                 
-                z = self.model.generate_embeddings(x_num, x_cat)
-                embeddings.append(z.cpu())
-                labels.append(targets)
-        
-        return torch.cat(embeddings, dim=0), torch.cat(labels, dim=0)
+                z = self.model.encoder(x_num, x_cat)
+                all_embeddings.append(z)
+                all_labels.append(y)
+                
+        return torch.cat(all_embeddings, dim=0), torch.cat(all_labels, dim=0)
+
+    def _visualize_latent_space(self, phase, save_dir='/workspace/underwriting-explainable-ai'):
+        """Visualize t-SNE for the current phase."""
+        try:
+            print(f"Generating t-SNE visualization for Phase {phase}...")
+            
+            # Collect data from train_loader (limit to 5000 samples)
+            X_num_list, X_cat_list, y_list = [], [], []
+            max_samples = 5000
+            current_samples = 0
+            
+            self.model.eval()
+            
+            # Use a separate iterator
+            with torch.no_grad():
+                for batch in self.train_loader:
+                    if current_samples >= max_samples:
+                        break
+                    
+                    x_num, x_cat, y = batch
+                    
+                    X_num_list.append(x_num.cpu().numpy())
+                    X_cat_list.append(x_cat.cpu().numpy())
+                    y_list.append(y.cpu().numpy())
+                    
+                    current_samples += x_num.size(0)
+            
+            if not X_num_list:
+                print("Warning: No data collected for visualization.")
+                return
+
+            X_num = np.concatenate(X_num_list, axis=0)[:max_samples]
+            X_cat = np.concatenate(X_cat_list, axis=0)[:max_samples]
+            y = np.concatenate(y_list, axis=0)[:max_samples]
+            
+            output_path = os.path.join(save_dir, f'tsne_visualization_phase{phase}.png')
+            
+            # Try to Collect Alpha if available in dataset
+            # Note: Dataset might return (x_num, x_cat, y) or (x_num, x_cat, y, alpha) depending on implementation
+            # Current implementation of ICRDataset returns (x_num, x_cat, y) based on previous code.
+            # So we might not have Alpha here directly from loader.
+            # However, we can try to infer or just stick to Class visualization for now in Trainer,
+            # and rely on generate_outputs.py for full Alpha viz.
+            # BUT, user wants to see it during training.
+            
+            # Let's check if we can get Alpha. 
+            # If not easily possible without changing Dataset, we should at least create Class viz 
+            # with correct naming context.
+            
+            # Actually, let's just create Class visualization for now as "tsne_visualization_phase{phase}_class.png"
+            # and if we can't get Alpha, we skip it or leave it to generate_outputs.py.
+            # The user's compliant was "only tsne_visualization_phase1.png" exists.
+            
+            # User requested to disable t-SNE generation during training.
+            # create_tsne_visualization(
+            #     self.model,
+            #     X_num, X_cat, y,
+            #     output_path=os.path.join(save_dir, f'tsne_visualization_phase{phase}_class.png'),
+            #     n_samples=max_samples,
+            #     title_suffix="(Class)",
+            #     perplexity=30
+            # )
+            # print(f"  Saved Class visualization to {os.path.join(save_dir, f'tsne_visualization_phase{phase}_class.png')}")
+            print(f"  t-SNE visualization skipped as requested.")
+            
+            # To get Alpha, we would need to change the DataLoader or Dataset to return it.
+            # Given the constraints, I will advise the user to use generate_outputs.py for Alpha,
+            # but I will ensure the default training output is at least clearly labeled as Class.
+            
+        except Exception as e:
+            print(f"Error generating t-SNE visualization: {e}")
+            import traceback
+            traceback.print_exc()
     
     def train_phase1_epoch(self) -> Dict[str, float]:
         """Train one epoch in Phase 1."""
@@ -158,8 +229,7 @@ class Trainer:
             outputs = self.model(x_num, x_cat, return_all=True)
             
             losses = self.phase1_criterion(
-                outputs, targets, x_num, x_cat,
-                self.model.prototype_layer
+                outputs, targets, x_num, x_cat
             )
             
             losses['total'].backward()
@@ -229,8 +299,7 @@ class Trainer:
             
             if self.current_phase == 1:
                 losses = self.phase1_criterion(
-                    outputs, targets, x_num, x_cat,
-                    self.model.prototype_layer
+                    outputs, targets, x_num, x_cat
                 )
             else:
                 losses = self.phase2_criterion(
@@ -280,15 +349,17 @@ class Trainer:
                 print("Phase 1: Training encoder + classifier (no local prototypes)")
         else:
             # Phase 2: Re-initialize encoder + train with P-Space (per PTaRL paper)
-            if verbose:
-                print("Re-initializing encoder parameters for Phase 2 (per PTaRL paper)...")
-            self._reinitialize_encoder()
-            
             # Initialize global prototypes via KMeans on Phase 1 embeddings
             if verbose:
-                print("Initializing global prototypes via KMeans...")
+                print("Initializing global prototypes via KMeans (using learned Phase 1 embeddings)...")
             embeddings = self._collect_embeddings()
             self.model.initialize_global_prototypes(embeddings)
+            
+            # Phase 2: Re-initialize encoder + train with P-Space (per PTaRL paper)
+            if verbose:
+                print("Re-initializing encoder parameters for Phase 2 (start from scratch with P-Space)...")
+            self._reinitialize_encoder()
+            
             self.model.set_second_phase()
         
         self._init_optimizer(phase, epochs)
@@ -344,6 +415,9 @@ class Trainer:
                 if verbose:
                     print(f"Early stopping Phase {phase} at epoch {epoch+1}")
                 break
+        
+        # Visualize latent space at the end of the phase
+        self._visualize_latent_space(phase)
     
     def train(
         self,

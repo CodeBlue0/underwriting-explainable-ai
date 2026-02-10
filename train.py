@@ -173,8 +173,12 @@ def main():
     # Load checkpoint if provided
     if args.checkpoint:
         print(f"  Loading checkpoint from: {args.checkpoint}")
-        checkpoint = torch.load(args.checkpoint, map_location=device)
-        model.load_state_dict(checkpoint['model_state_dict'])
+        checkpoint = torch.load(args.checkpoint, map_location=device, weights_only=False)
+        # Use strict=False to handle deprecated keys from old checkpoints
+        # (e.g., prototype_layer, classifier were removed in refactoring)
+        missing, unexpected = model.load_state_dict(checkpoint['model_state_dict'], strict=False)
+        if unexpected:
+            print(f"  Note: Ignored deprecated keys: {unexpected}")
         if args.phase == 2:
             print("  Continuing to Phase 2 training...")
     
@@ -190,9 +194,7 @@ def main():
     print(f"    - Attention heads: {config.n_heads}")
     print(f"    - Transformer layers: {config.n_layers}")
     print(f"\n  PTaRL Architecture:")
-    print(f"    - Local prototypes: {config.n_prototypes}")
     print(f"    - Global prototypes: {model.n_global_prototypes}")
-    print(f"    - Similarity type: {config.similarity_type}")
     
     # Phase info
     if args.phase:
