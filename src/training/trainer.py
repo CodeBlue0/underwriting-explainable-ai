@@ -441,6 +441,15 @@ class Trainer:
                       f"Val Loss: {val_metrics['val_loss']:.4f} - "
                       f"Val AUC: {val_metrics['val_auc']:.4f}")
             
+            if verbose and (epoch + 1) % 1 == 0:
+                 # Save checkpoint for every epoch
+                 epoch_save_path = os.path.join(
+                     self.config.model_save_path, 
+                     f'model_phase{phase}_epoch{epoch+1}.pt'
+                 )
+                 self.save_checkpoint(epoch_save_path)
+                 print(f"  Checkpoint saved: {epoch_save_path}")
+
             if self.patience_counter >= early_stopping_patience:
                 if verbose:
                     print(f"Early stopping Phase {phase} at epoch {epoch+1}")
