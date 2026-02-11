@@ -72,6 +72,7 @@ class CategoricalEmbedding(nn.Module):
             d_model: Dimension of each embedding
         """
         super().__init__()
+        self.d_model = d_model
         self.embeddings = nn.ModuleList([
             nn.Embedding(card, d_model) for card in cardinalities
         ])
@@ -84,6 +85,10 @@ class CategoricalEmbedding(nn.Module):
         Returns:
             (batch_size, n_categorical, d_model) - embedded features
         """
+        if not self.embeddings:
+            # Return empty tensor with shape (batch_size, 0, d_model)
+            return torch.empty(x_cat.shape[0], 0, self.d_model, device=x_cat.device)
+            
         embedded = [
             emb(x_cat[:, i]) for i, emb in enumerate(self.embeddings)
         ]

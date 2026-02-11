@@ -43,8 +43,12 @@ class Trainer:
         self.scheduler = None
         
         # Loss functions
+        n_classes = getattr(config, 'n_classes', 1)
+        self.n_classes = n_classes
+        
         self.phase1_criterion = PrototypeLoss(
-            lambda_reconstruction=config.lambda_reconstruction
+            lambda_reconstruction=config.lambda_reconstruction,
+            n_classes=n_classes
         )
         
         ptarl_weights = getattr(config, 'ptarl_weights', {
@@ -53,7 +57,15 @@ class Trainer:
             'diversifying_weight': 0.5,
             'orthogonalization_weight': 2.5
         })
-        self.phase2_criterion = PTaRLLoss(**ptarl_weights)
+        # Add n_classes to ptarl_weights implies modifying PTaRLLoss init or kwargs
+        # Since PTaRLLoss is init with **kwargs, we can add it here if keys match.
+        # But PTaRLLoss init definition has n_classes as explicit arg now.
+        # Safer to pass explicitly.
+        
+        # We need to construct PTaRLLoss manually or update dict.
+        ptarl_args = ptarl_weights.copy()
+        ptarl_args['n_classes'] = n_classes
+        self.phase2_criterion = PTaRLLoss(**ptarl_args)
         
         # Training state
         self.current_epoch = 0
@@ -320,9 +332,27 @@ class Trainer:
         all_targets = np.array(all_targets)
         
         avg_loss = total_loss / n_batches
-        auc = roc_auc_score(all_targets, all_predictions)
-        acc = accuracy_score(all_targets, (all_predictions > 0.5).astype(int))
-        f1 = f1_score(all_targets, (all_predictions > 0.5).astype(int))
+        
+        if self.n_classes > 2:
+            # Multiclass
+            try:
+                auc = roc_auc_score(all_targets, all_predictions, multi_class='ovr', average='macro')
+            except ValueError:
+                auc = 0.5 # Fallback if single class
+                
+            y_pred = all_predictions.argmax(axis=1)
+            acc = accuracy_score(all_targets, y_pred)
+            f1 = f1_score(all_targets, y_pred, average='macro')
+        else:
+            # Binary
+            try:
+                auc = roc_auc_score(all_targets, all_predictions)
+            except ValueError:
+                auc = 0.5
+            
+            y_pred = (all_predictions > 0.5).astype(int)
+            acc = accuracy_score(all_targets, y_pred)
+            f1 = f1_score(all_targets, y_pred)
         
         return {
             'val_loss': avg_loss,

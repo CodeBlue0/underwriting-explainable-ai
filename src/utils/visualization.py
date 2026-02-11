@@ -3,7 +3,9 @@ import numpy as np
 import matplotlib
 import matplotlib.pyplot as plt
 from sklearn.manifold import TSNE
+from sklearn.manifold import TSNE
 from sklearn.neighbors import KNeighborsClassifier
+from matplotlib.offsetbox import OffsetImage, AnnotationBbox
 
 # Use non-interactive backend
 matplotlib.use('Agg')
@@ -74,8 +76,20 @@ def _compute_tsne_embeddings(
     return data_embeddings, proto_embeddings
 
 
+    # Print save message
+    print(f"  Saved to {output_path}")
+
+def _overlay_images(ax, embeddings, images, zoom=0.5):
+    """Overlay images on the plot at given coordinates."""
+    for x, y, img in zip(embeddings[:, 0], embeddings[:, 1], images):
+        im = OffsetImage(img, zoom=zoom, cmap='gray')
+        ab = AnnotationBbox(im, (x, y), xycoords='data', frameon=True,
+                            pad=0.1, bboxprops=dict(facecolor='white', alpha=0.8))
+        ax.add_artist(ab)
+
 def _plot_tsne_embeddings(
-    data_embeddings, proto_embeddings, labels, output_path, title, proto_label
+    data_embeddings, proto_embeddings, labels, output_path, title, proto_label,
+    proto_images=None, sample_images=None, sample_embeddings=None
 ):
     """Plot pre-computed t-SNE embeddings with given labels."""
     # Create plot
@@ -83,88 +97,73 @@ def _plot_tsne_embeddings(
     fig, ax = plt.subplots(figsize=(16, 12))
     
     # Handle labels dynamically
-    if isinstance(labels[0], (int, np.integer, float, np.floating)):
-        unique_labels = np.unique(labels)
-    else:
-        unique_labels = np.unique(labels)
-    
+    unique_labels = np.unique(labels)
     n_classes = len(unique_labels)
+    
     # Use tab10/tab20 for multiclass
     cmap_scatter = plt.cm.get_cmap('tab10' if n_classes <= 10 else 'tab20', n_classes)
     
     # Define custom colors
     custom_colors = {
-        # Class labels
-        0: '#2ecc71',   # Green (Non-Default)
-        1: '#e74c3c',   # Red (Default)
+        0: '#2ecc71',   # Green
+        1: '#e74c3c',   # Red
         0.0: '#2ecc71',
         1.0: '#e74c3c',
-        
-        # Alpha labels
-        'A': '#2ecc71', # Green (No Disease)
-        'B': '#e74c3c', # Red
-        'D': '#f1c40f', # Yellow
-        'G': '#9b59b6', # Purple
     }
     
     # Plot Data points
     for i, label_val in enumerate(unique_labels):
-        # Determine color
         if label_val in custom_colors:
             color = custom_colors[label_val]
         else:
-            # Fallback to colormap
             color = cmap_scatter(i)
         
-        # Determine mask based on original label type
-        if isinstance(label_val, (int, np.integer, float, np.floating)):
-             mask = labels == label_val
-        else:
-             mask = labels == label_val
-             
+        mask = labels == label_val
         ax.scatter(
             data_embeddings[mask, 0],
             data_embeddings[mask, 1],
             color=color,
             label=f"{label_val}",
-            alpha=0.6,
-            edgecolors='w',
-            linewidths=0.5,
-            s=30
+            alpha=0.4, # Lower alpha for better visibility of overlays
+            edgecolors='none',
+            s=20
         )
     
-    # Prototypes
-    ax.scatter(
-        proto_embeddings[:, 0],
-        proto_embeddings[:, 1],
-        c='#9b59b6', # Keep prototypes distinct purple
-        marker='*',
-        s=600,
-        edgecolors='white',
-        linewidths=2,
-        label=proto_label,
-        zorder=100
-    )
-    
-    for i, (x, y) in enumerate(proto_embeddings):
-        ax.annotate(
-            f'P{i+1}',
-            (x, y),
-            xytext=(0, 10),
-            textcoords='offset points',
-            ha='center',
-            fontsize=12,
-            fontweight='bold',
-            color='#8e44ad',
-            bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="none", alpha=0.7)
+    # Prototypes (Markers hidden if images are present, otherwise stars)
+    if proto_images is None:
+        ax.scatter(
+            proto_embeddings[:, 0],
+            proto_embeddings[:, 1],
+            c='#9b59b6', # Keep prototypes distinct purple
+            marker='*',
+            s=400,
+            edgecolors='white',
+            linewidths=2,
+            label=proto_label,
+            zorder=100
         )
+    else:
+        # Just add a dummy invisible point for legend
+        ax.scatter(
+            [], [], 
+            c='#9b59b6', marker='*', s=400, label=proto_label
+        )
+
+    # Overlay Prototype Images
+    if proto_images is not None:
+        # Increase zoom for prototypes (Make them BIG)
+        _overlay_images(ax, proto_embeddings, proto_images, zoom=1.5)
+    
+    # Overlay Random Sample Images
+    if sample_images is not None and sample_embeddings is not None:
+        _overlay_images(ax, sample_embeddings, sample_images, zoom=0.5)
         
     ax.set_title(title, fontsize=16, fontweight='bold')
     ax.set_xlabel('t-SNE Dimension 1', fontsize=12)
     ax.set_ylabel('t-SNE Dimension 2', fontsize=12)
     
     # Legend
-    ax.legend(loc='upper left', bbox_to_anchor=(1.02, 1), fontsize=11, framealpha=0.9)
+    ax.legend(loc='upper right', fontsize=11, framealpha=0.9)
     ax.grid(True, alpha=0.2)
     
     plt.tight_layout()
@@ -259,6 +258,7 @@ def create_tsne_visualization(
             proto_label='Global Prototype Directions'
         )
     
+    
     # 2. Latent Z Visualization (Encoder Output)
     print(">>> Generating Latent Z Visualization...")
     z = get_latent_representations(model, sampled_num, sampled_cat)
@@ -268,6 +268,30 @@ def create_tsne_visualization(
     print(f"  Computing t-SNE embeddings for Phase 2 Z-Space...")
     z_data_emb, z_proto_emb = _compute_tsne_embeddings(z, raw_prototypes, perplexity, random_state)
     
+    # Decode Prototypes for Z-Space
+    print("  Decoding prototypes for visualization...")
+    device = next(model.parameters()).device
+    with torch.no_grad():
+        proto_z = model.global_prototype_layer.prototypes
+        num_recon, _ = model.decoder(proto_z) # Decode prototypes
+        proto_imgs = num_recon.cpu().numpy().reshape(-1, 28, 28)
+        
+        # Randomly select some data samples to overlay
+        n_overlay = 20
+        idx_overlay = np.random.choice(len(z_data_emb), n_overlay, replace=False)
+        sample_embeddings = z_data_emb[idx_overlay]
+        
+        # Get their images
+        sample_num = sampled_num[idx_overlay]
+        # Invert normalization for visualization (approximate)
+        # x * std + mean. 0.3081, 0.1307
+        sample_imgs = (sample_num * 0.3081 + 0.1307).reshape(-1, 28, 28)
+        sample_imgs = np.clip(sample_imgs, 0, 1)
+        
+        # Invert prototypes too
+        proto_imgs = (proto_imgs * 0.3081 + 0.1307)
+        proto_imgs = np.clip(proto_imgs, 0, 1)
+
     # Plot Z-Space for each label set
     for label_name, labels in sampled_labels_dict.items():
         fname = f"{file_prefix}_z_{label_name.lower()}.png"
@@ -277,5 +301,8 @@ def create_tsne_visualization(
             z_data_emb, z_proto_emb, labels,
             output_path=full_path,
             title=f'Phase 2: Latent Z Space ({label_name})',
-            proto_label='Global Prototypes'
+            proto_label='Global Prototypes',
+            proto_images=proto_imgs, # Overlay prototype images
+            sample_images=sample_imgs, # Overlay sample images
+            sample_embeddings=sample_embeddings
         )

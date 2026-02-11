@@ -25,20 +25,24 @@ class PrototypeLoss(nn.Module):
         self,
         lambda_reconstruction: float = 0.1,
         num_weight: float = 1.0,
-        cat_weight: float = 1.0
+        cat_weight: float = 1.0,
+        n_classes: int = 2
     ):
         """
         Args:
             lambda_reconstruction: Weight for reconstruction loss
             num_weight: Weight for numerical reconstruction
             cat_weight: Weight for categorical reconstruction
+            n_classes: Number of classes (2 for binary, >2 for multiclass)
         """
         super().__init__()
         self.lambda_reconstruction = lambda_reconstruction
         self.num_weight = num_weight
         self.cat_weight = cat_weight
+        self.n_classes = n_classes
         
         self.bce_loss = nn.BCEWithLogitsLoss()
+        self.ce_task_loss = nn.CrossEntropyLoss()
         self.mse_loss = nn.MSELoss()
         self.ce_loss = nn.CrossEntropyLoss()
     
@@ -63,7 +67,11 @@ class PrototypeLoss(nn.Module):
             Dictionary of losses including 'total' loss
         """
         # 1. Classification loss (Binary Cross-Entropy)
-        loss_cls = self.bce_loss(outputs['logits'], targets)
+        # 1. Classification loss
+        if self.n_classes > 2:
+            loss_cls = self.ce_task_loss(outputs['logits'], targets)
+        else:
+            loss_cls = self.bce_loss(outputs['logits'], targets.float())
         
         # 2. Reconstruction loss
         loss_recon_num = self.mse_loss(outputs['num_recon'], x_num)
@@ -146,7 +154,8 @@ class PTaRLLoss(nn.Module):
         orthogonalization_weight: float = 2.5,
         reconstruction_weight: float = 0.1,
         sinkhorn_eps: float = 0.1,
-        sinkhorn_max_iter: int = 50
+        sinkhorn_max_iter: int = 50,
+        n_classes: int = 2
     ):
         super().__init__()
         self.task_weight = task_weight
@@ -154,8 +163,10 @@ class PTaRLLoss(nn.Module):
         self.diversifying_weight = diversifying_weight
         self.orthogonalization_weight = orthogonalization_weight
         self.reconstruction_weight = reconstruction_weight
+        self.n_classes = n_classes
         
         self.bce_loss = nn.BCEWithLogitsLoss()
+        self.ce_task_loss = nn.CrossEntropyLoss()
         self.mse_loss = nn.MSELoss()
         self.ce_loss = nn.CrossEntropyLoss()
         
@@ -222,7 +233,11 @@ class PTaRLLoss(nn.Module):
         from ..models.prototype_layer import diversifying_loss
         
         # 1. Task loss (BCE)
-        loss_task = self.bce_loss(outputs['logits'], targets)
+        # 1. Task loss
+        if self.n_classes > 2:
+            loss_task = self.ce_task_loss(outputs['logits'], targets)
+        else:
+            loss_task = self.bce_loss(outputs['logits'], targets.float())
         
         # 2. Projection loss
         loss_projection = self.projection_loss(

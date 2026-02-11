@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-Generate t-SNE visualization from trained model.
+Generate t-SNE visualization from trained model (MNIST).
 
 Usage:
-    python generate_outputs.py --checkpoint /workspace/checkpoints/icr/best_model_phase1.pt --phase 1
-    python generate_outputs.py --checkpoint /workspace/checkpoints/icr/best_model_phase2.pt --phase 2
+    python generate_outputs.py --checkpoint /workspace/checkpoints/mnist/best_model_phase1.pt --phase 1
+    python generate_outputs.py --checkpoint /workspace/checkpoints/mnist/best_model_phase2.pt --phase 2
 """
 import argparse
 import os
@@ -20,9 +20,10 @@ matplotlib.use('Agg')
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent))
 
-from src.config import ICRConfig, get_default_config
+from src.config import get_default_config
 from src.models.model import create_model_from_config
 from src.utils.visualization import create_tsne_visualization
+from src.data.preprocessor import load_mnist_data
 
 
 def load_model_and_preprocessor(
@@ -45,15 +46,17 @@ def load_model_and_preprocessor(
             
     # Load preprocessor
     preprocessor_path = os.path.join(checkpoint_dir, 'preprocessor.pkl')
-    if not os.path.exists(preprocessor_path):
-        # Fallback: check subdirectory
-        preprocessor_path = os.path.join(checkpoint_dir, 'icr', 'preprocessor.pkl')
-        
-    with open(preprocessor_path, 'rb') as f:
-        preprocessor = pickle.load(f)
+    # If not found, create new one (stateless for MNIST)
+    
+    if os.path.exists(preprocessor_path):
+        with open(preprocessor_path, 'rb') as f:
+            preprocessor = pickle.load(f)
+    else:
+        from src.data.preprocessor import MNISTPreprocessor
+        preprocessor = MNISTPreprocessor()
+        preprocessor.fit()
     
     config.categorical_cardinalities = preprocessor.get_cardinalities()
-    
     if hasattr(preprocessor, 'numerical_features'):
         config.numerical_features = preprocessor.numerical_features
     
@@ -112,7 +115,7 @@ def main():
     args = parse_args()
     
     print("=" * 60)
-    print("GENERATING T-SNE VISUALIZATION (ICR)")
+    print("GENERATING T-SNE VISUALIZATION (MNIST)")
     print("=" * 60)
     
     # [1/3] Load model and preprocessor
@@ -127,32 +130,20 @@ def main():
     
     # [2/3] Load training data
     print("\n[2/3] Loading training data...")
-    train_path = config.train_path
-    print(f"  Training data path: {train_path}")
-    train_df = pd.read_csv(train_path)
+    # This automatically downloads and preprocesses (flatten + scale)
+    (train_num, train_cat, train_target), _, _ = load_mnist_data(config)
+    print(f"  Loaded {len(train_num)} training samples")
     
-    target_col = getattr(config, 'target_column', 'Class')
-    train_labels = train_df[target_col].values
-    X_num_train, X_cat_train = preprocessor.transform(train_df)
-    print(f"  Loaded {len(train_df)} training samples")
+    # Limit for visualization
+    limit = 1000
+    indices = np.random.choice(len(train_num), size=min(len(train_num), limit), replace=False)
+    
+    X_num_train = train_num[indices]
+    X_cat_train = train_cat[indices]
+    train_labels = train_target[indices]
     
     # Prepare labels dictionary
-    labels_dict = {'Class': train_labels}
-    
-    # Merge Alpha labels from greeks.csv if available
-    if 'Alpha' not in train_df.columns:
-        greeks_path = getattr(config, 'greeks_path', '/workspace/data/icr/greeks.csv')
-        if os.path.exists(greeks_path):
-            print(f"  Loading Greeks from {greeks_path} to get Alpha...")
-            greeks_df = pd.read_csv(greeks_path)
-            if 'Id' in train_df.columns and 'Id' in greeks_df.columns:
-                train_df = pd.merge(train_df, greeks_df[['Id', 'Alpha']], on='Id', how='left')
-    
-    if 'Alpha' in train_df.columns:
-        print("  Found 'Alpha' column. Adding to visualization labels.")
-        labels_dict['Alpha'] = train_df['Alpha'].fillna('N/A').values
-    else:
-        print("  'Alpha' column not found. Skipping Alpha visualization.")
+    labels_dict = {'IsMultipleOf4': train_labels}
         
     # [3/3] Create t-SNE visualization
     print(f"\n[3/3] Creating t-SNE visualizations (Phase {phase})...")
@@ -162,8 +153,8 @@ def main():
         X_cat_train, 
         labels_dict=labels_dict,
         output_dir=args.output_dir,
-        file_prefix=f'tsne_visualization_phase{phase}',
-        n_samples=5000
+        file_prefix=f'mnist_tsne_phase{phase}',
+        n_samples=limit
     )
     
     print("\n" + "=" * 60)

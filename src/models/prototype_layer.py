@@ -381,5 +381,11 @@ def diversifying_loss(
     positive_mask = label_similarity
     positive_loss = torch.sum(distance * positive_mask) / (torch.sum(positive_mask) + 1e-8)
     
-    return positive_loss
+    # Negative loss: maximize distance for different-class pairs (margin-based)
+    negative_mask = 1.0 - label_similarity
+    margin = 1.0
+    negative_loss_raw = F.relu(margin - distance) * negative_mask
+    negative_loss = torch.sum(negative_loss_raw) / (torch.sum(negative_mask) + 1e-8)
+    
+    return positive_loss + negative_loss
 
