@@ -74,18 +74,23 @@ class PrototypeLoss(nn.Module):
             loss_cls = self.bce_loss(outputs['logits'], targets.float())
         
         # 2. Reconstruction loss
-        loss_recon_num = self.mse_loss(outputs['num_recon'], x_num)
-        
-        loss_recon_cat = torch.tensor(0.0, device=x_num.device)
-        for i, cat_logits in enumerate(outputs['cat_recons']):
-            n_classes = cat_logits.shape[1]
-            target_i = x_cat[:, i].clamp(0, n_classes - 1)
-            loss_recon_cat = loss_recon_cat + self.ce_loss(cat_logits, target_i)
-        if len(outputs['cat_recons']) > 0:
-            loss_recon_cat = loss_recon_cat / len(outputs['cat_recons'])
-        
-        loss_recon = self.num_weight * loss_recon_num + self.cat_weight * loss_recon_cat
-        
+        if self.lambda_reconstruction > 0:
+            loss_recon_num = self.mse_loss(outputs['num_recon'], x_num)
+            
+            loss_recon_cat = torch.tensor(0.0, device=x_num.device)
+            for i, cat_logits in enumerate(outputs['cat_recons']):
+                n_classes = cat_logits.shape[1]
+                target_i = x_cat[:, i].clamp(0, n_classes - 1)
+                loss_recon_cat = loss_recon_cat + self.ce_loss(cat_logits, target_i)
+            if len(outputs['cat_recons']) > 0:
+                loss_recon_cat = loss_recon_cat / len(outputs['cat_recons'])
+            
+            loss_recon = self.num_weight * loss_recon_num + self.cat_weight * loss_recon_cat
+        else:
+            loss_recon = torch.tensor(0.0, device=x_num.device)
+            loss_recon_num = torch.tensor(0.0, device=x_num.device)
+            loss_recon_cat = torch.tensor(0.0, device=x_num.device)
+
         # Total loss (simplified per PTaRL paper)
         total_loss = loss_cls + self.lambda_reconstruction * loss_recon
         

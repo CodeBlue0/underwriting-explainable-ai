@@ -16,6 +16,7 @@ import pickle
 from pathlib import Path
 import matplotlib
 matplotlib.use('Agg')
+import matplotlib.pyplot as plt
 
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent))
@@ -130,32 +131,117 @@ def main():
     
     # [2/3] Load training data
     print("\n[2/3] Loading training data...")
-    # This automatically downloads and preprocesses (flatten + scale)
-    (train_num, train_cat, train_target), _, _ = load_mnist_data(config)
+    from torchvision import datasets, transforms
+    
+    # Use standard transform matching preprocessor
+    transform = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Normalize((0.1307,), (0.3081,))
+    ])
+    
+    root = config.train_path or './data'
+    train_dataset = datasets.MNIST(root, train=True, download=True, transform=transform)
+    
+    # Use preprocessor only for X transformation logic (if needed) or just manual flatten
+    # The preprocessor.transform method does this:
+    # loader = DataLoader(dataset, batch_size=len(dataset), shuffle=False)
+    # data, targets = next(iter(loader))
+    # X_num = data.view(data.size(0), -1).numpy()
+    
+    loader = torch.utils.data.DataLoader(train_dataset, batch_size=len(train_dataset), shuffle=False)
+    data, targets = next(iter(loader))
+    
+    train_num = data.view(data.size(0), -1).numpy()
+    train_cat = np.zeros((len(train_dataset), 0), dtype=np.int64)
+    train_target = targets.numpy() # Original 0-9 labels!
+    
     print(f"  Loaded {len(train_num)} training samples")
+    print(f"  Target classes found: {np.unique(train_target)}")
     
     # Limit for visualization
-    limit = 1000
+    limit = 5000
     indices = np.random.choice(len(train_num), size=min(len(train_num), limit), replace=False)
     
     X_num_train = train_num[indices]
     X_cat_train = train_cat[indices]
     train_labels = train_target[indices]
     
-    # Prepare labels dictionary
-    labels_dict = {'IsMultipleOf4': train_labels}
-        
     # [3/3] Create t-SNE visualization
     print(f"\n[3/3] Creating t-SNE visualizations (Phase {phase})...")
-    create_tsne_visualization(
-        model, 
-        X_num_train, 
-        X_cat_train, 
-        labels_dict=labels_dict,
-        output_dir=args.output_dir,
-        file_prefix=f'mnist_tsne_phase{phase}',
-        n_samples=limit
+    
+    device = next(model.parameters()).device
+    model.eval()
+    
+    # Extract embeddings
+    z_list = []
+    p_list = []
+    
+    batch_size = 256
+    with torch.no_grad():
+        for i in range(0, len(X_num_train), batch_size):
+            b_num = torch.tensor(X_num_train[i:i+batch_size], dtype=torch.float32).to(device)
+            b_cat = torch.tensor(X_cat_train[i:i+batch_size], dtype=torch.long).to(device)
+            
+            outputs = model(b_num, b_cat, return_all=True)
+            z_list.append(outputs['z'].cpu().numpy())
+            
+            if 'p_space' in outputs:
+                p_list.append(outputs['p_space'].cpu().numpy())
+            elif phase == 2:
+                # If model is in phase 2 but p_space not returned (should be there if return_all=True)
+                pass
+
+    z_all = np.concatenate(z_list, axis=0)
+    
+    # Helper for plotting
+    def plot_simple_tsne(data, labels, path, title):
+        print(f"  Computing t-SNE for {title}...")
+        from sklearn.manifold import TSNE
+        tsne = TSNE(n_components=2, perplexity=30, random_state=42, init='pca', learning_rate='auto')
+        emb = tsne.fit_transform(data)
+        
+        print(f"  Plotting to {path}...")
+        plt.figure(figsize=(10, 8))
+        
+        # Use tab10 colormap which has 10 distinct colors
+        cmap = plt.get_cmap('tab10')
+        
+        # Plot each class separately to create a proper legend
+        unique_labels = sorted(np.unique(labels))
+        for lbl in unique_labels:
+            mask = labels == lbl
+            plt.scatter(
+                emb[mask, 0], emb[mask, 1],
+                color=cmap(lbl),  # discrete access for tab10 (0-9)
+                label=f"Digit {lbl}",
+                alpha=0.7, 
+                s=20, 
+                edgecolors='none'
+            )
+            
+        plt.title(title, fontsize=15)
+        plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left', title="Digit Class")
+        plt.tight_layout()
+        plt.savefig(path, dpi=150)
+        plt.close()
+
+    # Plot Z-Space
+    plot_simple_tsne(
+        z_all, 
+        train_labels, 
+        os.path.join(args.output_dir, f'mnist_tsne_phase{phase}_z_class.png'), 
+        f'Phase {phase} Z-Space (Digits)'
     )
+    
+    # Plot P-Space if available
+    if p_list:
+        p_all = np.concatenate(p_list, axis=0)
+        plot_simple_tsne(
+            p_all,
+            train_labels,
+            os.path.join(args.output_dir, f'mnist_tsne_phase{phase}_pspace_class.png'),
+            f'Phase {phase} P-Space (Digits)'
+        )
     
     print("\n" + "=" * 60)
     print("COMPLETE!")

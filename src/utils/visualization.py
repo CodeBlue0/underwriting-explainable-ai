@@ -209,24 +209,53 @@ def create_tsne_visualization(
         from sklearn.cluster import KMeans
         kmeans = KMeans(n_clusters=model.n_global_prototypes, random_state=random_state, n_init='auto')
         kmeans.fit(z)
-        prototypes = kmeans.cluster_centers_
+        centers = kmeans.cluster_centers_
+        
+        # FIND NEAREST NEIGHBORS (Real Data) for each center
+        print("  Finding nearest actual data points to cluster centers...")
+        from sklearn.metrics import pairwise_distances_argmin_min
+        closest_indices, _ = pairwise_distances_argmin_min(centers, z)
+        
+        # Use the actual data points as prototypes
+        prototypes = z[closest_indices]
+        
+        # Get the actual images for these 'prototypes'
+        proto_num = sampled_num[closest_indices]
+        # Invert normalization
+        proto_imgs = (proto_num * 0.3081 + 0.1307).reshape(-1, 28, 28)
+        proto_imgs = np.clip(proto_imgs, 0, 1)
         
         # 1. Compute Embeddings ONCE
         print(f"  Computing t-SNE embeddings for Phase 1 Z-Space...")
         data_emb, proto_emb = _compute_tsne_embeddings(z, prototypes, perplexity, random_state)
         
+        # Prepare random sample overlay (same as before)
+        print("  Prepared samples for visualization...")
+        # Randomly select some data samples to overlay
+        n_overlay = 20
+        # Exclude the prototype indices to avoid duplicates if possible, usually fine though
+        idx_overlay = np.random.choice(len(data_emb), min(n_overlay, len(data_emb)), replace=False)
+        sample_embeddings = data_emb[idx_overlay]
+        
+        # Get their images
+        sample_num = sampled_num[idx_overlay]
+        sample_imgs = (sample_num * 0.3081 + 0.1307).reshape(-1, 28, 28)
+        sample_imgs = np.clip(sample_imgs, 0, 1)
+
         # 2. Plot for each label set
         for label_name, labels in sampled_labels_dict.items():
             fname = f"{file_prefix}_{label_name.lower()}.png"
             full_path = f"{output_dir}/{fname}"
-            # Clean up double slashes
             full_path = full_path.replace('//', '/')
             
             _plot_tsne_embeddings(
                 data_emb, proto_emb, labels,
                 output_path=full_path,
                 title=f'Phase 1: Latent Space ({label_name})',
-                proto_label='Cluster Centers (KMeans)'
+                proto_label='Prototypes (Nearest Real Data)',
+                proto_images=proto_imgs, # Real images!
+                sample_images=sample_imgs,
+                sample_embeddings=sample_embeddings
             )
         return
 

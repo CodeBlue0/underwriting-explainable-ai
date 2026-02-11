@@ -55,7 +55,7 @@ class ModelConfig:
     early_stopping_patience: int = 5
     
     # Loss weights
-    lambda_reconstruction: float = 0.5  # Higher weight for reconstruction on images
+    lambda_reconstruction: float = 0.0  # Higher weight for reconstruction on images
     lambda_diversity: float = 0.1
     lambda_clustering: float = 0.1
     
