@@ -59,13 +59,23 @@ def load_model_and_preprocessor(
     
     # Load checkpoint
     if model_path is None:
-        for name in ['best_model_phase2.pt', 'best_model_phase1.pt', 'best_model.pt']:
+        # Determine candidate checkpoints based on requested phase
+        if force_phase == 1:
+            candidates = ['best_model_phase1.pt', 'best_model.pt', 'best_model_phase2.pt']
+        elif force_phase == 2:
+            candidates = ['best_model_phase2.pt', 'best_model.pt', 'best_model_phase1.pt']
+        else:
+            # Default priority (prefer Phase 2 model as it's the final one)
+            candidates = ['best_model_phase2.pt', 'best_model_phase1.pt', 'best_model.pt']
+            
+        for name in candidates:
             candidate = os.path.join(checkpoint_dir, name)
             if os.path.exists(candidate):
                 model_path = candidate
                 break
+        
         if model_path is None:
-            raise FileNotFoundError(f"No checkpoint found in {checkpoint_dir}")
+            raise FileNotFoundError(f"No checkpoint found in {checkpoint_dir}. Searched for: {candidates}")
     
     print(f"  Loading checkpoint: {model_path}")
     checkpoint = torch.load(model_path, map_location='cpu', weights_only=False)
