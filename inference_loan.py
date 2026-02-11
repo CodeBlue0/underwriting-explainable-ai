@@ -28,7 +28,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description='Generate submission for Loan Default Prediction')
     parser.add_argument('--checkpoint', type=str, required=True,
                         help='Path to trained model checkpoint')
-    parser.add_argument('--data', type=str, default='/workspace/data/loan/test.csv',
+    parser.add_argument('--data', type=str, default='/workspace/data/loan/test_noisy.csv',
                         help='Path to test data CSV')
     parser.add_argument('--output', type=str, default='/workspace/data/loan/submission.csv',
                         help='Path to save submission CSV')

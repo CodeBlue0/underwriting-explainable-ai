@@ -20,7 +20,7 @@ class ModelConfig:
         'loan_int_rate',
         'loan_percent_income',
         'cb_person_cred_hist_length'
-    ])
+    ] + [f'rand_{i}' for i in range(1, 31)])
     
     categorical_features: List[str] = field(default_factory=lambda: [
         'person_home_ownership',
@@ -71,8 +71,8 @@ class ModelConfig:
     lambda_clustering: float = 0.01  # Reduced to prevent clumping
     
     # Paths
-    train_path: str = '/workspace/data/loan/train.csv'
-    test_path: str = '/workspace/data/loan/test.csv'
+    train_path: str = '/workspace/data/loan/train_noisy.csv'
+    test_path: str = '/workspace/data/loan/test_noisy.csv'
     model_save_path: str = '/workspace/checkpoints/loan'
     
     # PTaRL Settings
