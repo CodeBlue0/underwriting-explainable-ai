@@ -30,7 +30,7 @@ class PrototypeExplainer:
         """
         Args:
             model: Trained PrototypeNetwork
-            preprocessor: LoanDataPreprocessor for inverse transforms
+            preprocessor: Preprocessor for inverse transforms (e.g., ICRPreprocessor)
             prototype_descriptions: Dict mapping prototype idx -> descriptions
             device: Device for inference
         """

@@ -1,204 +1,195 @@
-
+"""
+Preprocessor for ICR (Identify Age-Related Conditions) Dataset.
+Handles missing values, scaling, and encoding.
+"""
 import pandas as pd
 import numpy as np
 import pickle
-from typing import List, Tuple, Dict, Any, Optional
+from typing import List, Tuple, Dict, Any
 from sklearn.preprocessing import StandardScaler, LabelEncoder
 import os
 
-class LoanDataPreprocessor:
+
+class ICRPreprocessor:
     """
-    Preprocessor for loan data.
-    Handles missing values, scaling of numerical features, and encoding of categorical features.
+    Preprocessor for ICR dataset.
+    - Removes BQ, EL columns (high missing rate with target correlation)
+    - Imputes numerical with median, categorical with mode
+    - Scales numerical with StandardScaler
+    - Encodes categorical with LabelEncoder
     """
     
-    def __init__(self, numerical_features: List[str], categorical_features: List[str]):
+    def __init__(
+        self,
+        numerical_features: List[str],
+        categorical_features: List[str],
+        exclude_columns: List[str] = None
+    ):
         """
-        Initialize preprocessor.
-        
         Args:
-            numerical_features (List[str]): List of numerical feature names
-            categorical_features (List[str]): List of categorical feature names
+            numerical_features: List of numerical feature names
+            categorical_features: List of categorical feature names
+            exclude_columns: Columns to exclude (e.g., ['Id', 'Class', 'BQ', 'EL'])
         """
         self.numerical_features = numerical_features
         self.categorical_features = categorical_features
+        self.exclude_columns = exclude_columns or []
+        
         self.scaler = StandardScaler()
         self.encoders: Dict[str, LabelEncoder] = {}
-        self.num_imputers: Dict[str, float] = {}  # Median values for numerical imputation
-        self.cat_imputers: Dict[str, Any] = {}    # Mode values for categorical imputation
+        self.num_imputers: Dict[str, float] = {}  # Median for numerical
+        self.cat_imputers: Dict[str, Any] = {}    # Mode for categorical
+        self._fitted = False
         
-    def fit(self, df: pd.DataFrame) -> 'LoanDataPreprocessor':
+    def fit(self, df: pd.DataFrame) -> 'ICRPreprocessor':
         """
-        Fit the preprocessor to the data.
+        Fit the preprocessor to the training data.
         
         Args:
-            df (pd.DataFrame): Training data
+            df: Training DataFrame
             
         Returns:
             self
         """
         # 1. Fit numerical features
-        # Calculate medians for imputation
         for feat in self.numerical_features:
-            self.num_imputers[feat] = df[feat].median()
-            
-        # Fill missing values for scaling fitting
-        X_num = df[self.numerical_features].fillna(self.num_imputers)
+            if feat in df.columns:
+                self.num_imputers[feat] = df[feat].median()
+        
+        # Fill missing for scaling fit
+        X_num = df[self.numerical_features].copy()
+        for feat in self.numerical_features:
+            if feat in X_num.columns:
+                X_num[feat] = X_num[feat].fillna(self.num_imputers.get(feat, 0))
+        
         self.scaler.fit(X_num)
         
         # 2. Fit categorical features
         for feat in self.categorical_features:
-            # Calculate mode for imputation
-            self.cat_imputers[feat] = df[feat].mode()[0]
-            
-            # Fill missing
-            series = df[feat].fillna(self.cat_imputers[feat]).astype(str)
-            
-            # Initialize and fit encoder
-            le = LabelEncoder()
-            le.fit(series)
-            self.encoders[feat] = le
-            
-        return self
+            if feat in df.columns:
+                # Calculate mode for imputation
+                self.cat_imputers[feat] = df[feat].mode()[0]
+                
+                # Fit encoder
+                series = df[feat].fillna(self.cat_imputers[feat]).astype(str)
+                le = LabelEncoder()
+                le.fit(series)
+                self.encoders[feat] = le
         
+        self._fitted = True
+        return self
+    
     def transform(self, df: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray]:
         """
         Transform the data.
         
         Args:
-            df (pd.DataFrame): Data to transform
+            df: DataFrame to transform
             
         Returns:
-            Tuple[np.ndarray, np.ndarray]: (numerical_features, categorical_features)
+            (numerical_features, categorical_features) as numpy arrays
         """
+        if not self._fitted:
+            raise RuntimeError("Preprocessor must be fitted before transform")
+        
         # 1. Transform numerical features
-        X_num = df[self.numerical_features].fillna(self.num_imputers)
-        X_num = self.scaler.transform(X_num)
+        X_num = df[self.numerical_features].copy()
+        for feat in self.numerical_features:
+            if feat in X_num.columns:
+                X_num[feat] = X_num[feat].fillna(self.num_imputers.get(feat, 0))
+        
+        X_num_scaled = self.scaler.transform(X_num)
         
         # 2. Transform categorical features
         X_cat_list = []
         for feat in self.categorical_features:
-            # Impute
-            series = df[feat].fillna(self.cat_imputers[feat]).astype(str)
-            
-            # Transform
-            le = self.encoders[feat]
-            
-            # Handle unknown categories by mapping them to the most frequent class (mode)
-            # or raising an error? For robustness, we'll map unknowns to the first class (usually 0)
-            # or use a custom robust transform.
-            # Here we implement a simple safe transform: 
-            # if value not in classes, use mode (which we know is in classes).
-            
-            # Check for unknown values
-            mask = ~series.isin(le.classes_)
-            if mask.any():
-                # Replace unknown with mode (stored in cat_imputers, need to ensure it's string)
-                mode_val = str(self.cat_imputers[feat])
-                series[mask] = mode_val
+            if feat in df.columns:
+                series = df[feat].fillna(self.cat_imputers[feat]).astype(str)
+                le = self.encoders[feat]
                 
-            encoded = le.transform(series)
-            X_cat_list.append(encoded)
-            
-        X_cat = np.stack(X_cat_list, axis=1)
+                # Handle unknown categories
+                mask = ~series.isin(le.classes_)
+                if mask.any():
+                    series[mask] = str(self.cat_imputers[feat])
+                
+                encoded = le.transform(series)
+                X_cat_list.append(encoded)
         
-        return X_num.astype(np.float32), X_cat.astype(np.int64)
+        X_cat = np.stack(X_cat_list, axis=1) if X_cat_list else np.zeros((len(df), 0), dtype=np.int64)
+        
+        return X_num_scaled.astype(np.float32), X_cat.astype(np.int64)
+    
+    def fit_transform(self, df: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray]:
+        """Fit and transform in one step."""
+        self.fit(df)
+        return self.transform(df)
     
     def get_cardinalities(self) -> Dict[str, int]:
-        """
-        Get cardinality (number of unique values) for each categorical feature.
-        
-        Returns:
-            Dict[str, int]: Dictionary mapping feature name to cardinality
-        """
+        """Get cardinality for each categorical feature."""
         return {feat: len(enc.classes_) for feat, enc in self.encoders.items()}
     
     def inverse_transform_numerical(self, X_num: np.ndarray) -> np.ndarray:
-        """
-        Inverse transform scaled numerical features back to original scale.
-        
-        Args:
-            X_num: (N, n_numerical) scaled numerical features
-            
-        Returns:
-            np.ndarray: (N, n_numerical) original scale features
-        """
+        """Inverse transform scaled numerical features."""
         return self.scaler.inverse_transform(X_num)
-    
-    def inverse_transform_categorical(self, X_cat: np.ndarray) -> Dict[str, List[Any]]:
-        """
-        Inverse transform encoded categorical features back to original labels.
-        
-        Args:
-            X_cat: (N, n_categorical) encoded categorical indices
-            
-        Returns:
-            Dict[str, List[Any]]: Dictionary mapping feature name to list of labels
-        """
-        result = {}
-        for i, feat in enumerate(self.categorical_features):
-            le = self.encoders[feat]
-            # Clip indices to valid range
-            indices = np.clip(X_cat[:, i], 0, len(le.classes_) - 1)
-            result[feat] = le.inverse_transform(indices).tolist()
-        return result
     
     def save(self, path: str):
         """Save preprocessor to file."""
-        # Ensure directory exists
         os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
         with open(path, 'wb') as f:
             pickle.dump(self, f)
-            
+    
     @staticmethod
-    def load(path: str) -> 'LoanDataPreprocessor':
+    def load(path: str) -> 'ICRPreprocessor':
         """Load preprocessor from file."""
         with open(path, 'rb') as f:
             return pickle.load(f)
 
 
-
-def load_and_preprocess_data(
-    train_path: str, 
-    test_path: str,
-    numerical_features: List[str],
-    categorical_features: List[str]
-) -> Tuple[Tuple[np.ndarray, np.ndarray, np.ndarray], Tuple[np.ndarray, np.ndarray], LoanDataPreprocessor]:
+def load_icr_data(
+    config,
+    train_path: str = None,
+    test_path: str = None
+) -> Tuple[Tuple[np.ndarray, np.ndarray, np.ndarray], Tuple[np.ndarray, np.ndarray], ICRPreprocessor]:
     """
-    Load data from CSVs and preprocess it.
+    Load and preprocess ICR dataset.
     
     Args:
-        train_path (str): Path to training CSV
-        test_path (str): Path to test CSV
-        numerical_features (List[str]): List of numerical feature names
-        categorical_features (List[str]): List of categorical feature names
+        config: ICRConfig object
+        train_path: Path to training CSV (defaults to config.train_path)
+        test_path: Path to test CSV (defaults to config.test_path)
         
     Returns:
         (train_num, train_cat, train_target), (test_num, test_cat), preprocessor
     """
-    # 1. Load data
-    print(f"Loading data from {train_path} and {test_path}...")
+    train_path = train_path or config.train_path
+    test_path = test_path or config.test_path
+    
+    print(f"Loading ICR data from {train_path}...")
     train_df = pd.read_csv(train_path)
     test_df = pd.read_csv(test_path)
     
-    # 2. Check features
-    # Ensure all features exist
-    for f in numerical_features + categorical_features:
-        if f not in train_df.columns:
-            raise ValueError(f"Feature {f} not found in training data")
+    print(f"  Train samples: {len(train_df)}")
+    print(f"  Test samples: {len(test_df)}")
     
-    # 3. Initialize and fit preprocessor
-    preprocessor = LoanDataPreprocessor(numerical_features, categorical_features)
+    # Initialize preprocessor
+    preprocessor = ICRPreprocessor(
+        numerical_features=config.numerical_features,
+        categorical_features=config.categorical_features,
+        exclude_columns=config.exclude_columns
+    )
+    
+    # Fit on training data
     preprocessor.fit(train_df)
     
-    # 4. Transform data
+    # Transform
     train_num, train_cat = preprocessor.transform(train_df)
     test_num, test_cat = preprocessor.transform(test_df)
     
-    # 5. Extract target
-    if 'loan_status' in train_df.columns:
-        train_target = train_df['loan_status'].values.astype(np.int64)
-    else:
-        raise ValueError("Target column 'loan_status' not found in training data")
-        
+    # Extract target
+    train_target = train_df[config.target_column].values.astype(np.int64)
+    
+    print(f"  Numerical features: {train_num.shape[1]}")
+    print(f"  Categorical features: {train_cat.shape[1]}")
+    print(f"  Target distribution: {dict(pd.Series(train_target).value_counts())}")
+    
     return (train_num, train_cat, train_target), (test_num, test_cat), preprocessor

@@ -1,6 +1,5 @@
 """
-Configuration module for Prototype-based Neuro-Symbolic Model.
-Contains all hyperparameters and feature definitions.
+Configuration module for ICR (Identify Age-Related Conditions) Dataset.
 """
 from dataclasses import dataclass, field
 from typing import List, Dict
@@ -8,90 +7,74 @@ import torch
 
 
 @dataclass
-class ModelConfig:
-    """Complete configuration for the prototype network."""
+class ICRConfig:
+    """Configuration for ICR dataset with PTaRL model."""
     
-    # Feature definitions
+    # Feature definitions (excluding Id, Class, BQ, EL)
     numerical_features: List[str] = field(default_factory=lambda: [
-        'person_age',
-        'person_income', 
-        'person_emp_length',
-        'loan_amnt',
-        'loan_int_rate',
-        'loan_percent_income',
-        'cb_person_cred_hist_length'
+        'AB', 'AF', 'AH', 'AM', 'AR', 'AX', 'AY', 'AZ', 'BC', 'BD ',
+        'BN', 'BP', 'BR', 'BZ', 'CB', 'CC', 'CD ', 'CF', 'CH', 'CL',
+        'CR', 'CS', 'CU', 'CW ', 'DA', 'DE', 'DF', 'DH', 'DI', 'DL',
+        'DN', 'DU', 'DV', 'DY', 'EB', 'EE', 'EG', 'EH', 'EP', 'EU',
+        'FC', 'FD ', 'FE', 'FI', 'FL', 'FR', 'FS', 'GB', 'GE', 'GF',
+        'GH', 'GI', 'GL'
     ])
     
-    categorical_features: List[str] = field(default_factory=lambda: [
-        'person_home_ownership',
-        'loan_intent',
-        'loan_grade',
-        'cb_person_default_on_file'
-    ])
+    categorical_features: List[str] = field(default_factory=lambda: ['EJ'])
     
-    # Categorical feature cardinalities (will be updated from data)
+    # Columns to exclude
+    exclude_columns: List[str] = field(default_factory=lambda: ['Id', 'Class', 'BQ', 'EL'])
+    
+    # Target column
+    target_column: str = 'Class'
+    
+    # Categorical cardinalities (will be updated from data)
     categorical_cardinalities: Dict[str, int] = field(default_factory=lambda: {
-        'person_home_ownership': 4,  # RENT, OWN, MORTGAGE, OTHER
-        'loan_intent': 6,  # EDUCATION, MEDICAL, VENTURE, PERSONAL, DEBTCONSOLIDATION, HOMEIMPROVEMENT
-        'loan_grade': 7,  # A, B, C, D, E, F, G
-        'cb_person_default_on_file': 2  # Y, N
+        'EJ': 2  # A, B
     })
     
     # FT-Transformer architecture
-    d_model: int = 256
-    n_heads: int = 8
-    n_layers: int = 6
-    d_ffn: int = 1024
-    dropout: float = 0.2
-    attention_dropout: float = 0.1
-    ffn_dropout: float = 0.2
-    
-    # Prototype layer
-    n_prototypes: int = 10
-    prototype_dim: int = 256  # Same as d_model
-    similarity_type: str = 'rbf'  # 'rbf' or 'cosine'
-    rbf_sigma: float = 16.0  # Increased from 0.5 to prevent vanishing gradients
-    
-    # Class imbalance handling
-    pos_weight: float = 6.0  # Weight for positive class (Default)
+    d_model: int = 128  # Smaller for small dataset
+    n_heads: int = 4
+    n_layers: int = 4
+    d_ffn: int = 512
+    dropout: float = 0.3  # Higher dropout for small dataset
+    attention_dropout: float = 0.2
+    ffn_dropout: float = 0.3
     
     # Decoder architecture
-    decoder_hidden_dim: int = 512
+    decoder_hidden_dim: int = 256
     
     # Training hyperparameters
-    batch_size: int = 256
-    learning_rate: float = 1e-3
+    batch_size: int = 32  # Small batch for small dataset
+    learning_rate: float = 3e-4  # Reduced from 1e-3 for stability
     weight_decay: float = 1e-4
-    epochs: int = 50
-    early_stopping_patience: int = 10
+    epochs: int = 150  # Increased from 50 (not used directly, but good for reference)
+    early_stopping_patience: int = 30  # Increased from 15
     
-    # Loss weights
+    # Loss weights (Phase 1)
     lambda_reconstruction: float = 0.1
-    lambda_diversity: float = 1  # Drastically increased to force separation
-    lambda_clustering: float = 0.01  # Reduced to prevent clumping
     
     # Paths
-    train_path: str = '/workspace/data/loan/train.csv'
-    test_path: str = '/workspace/data/loan/test.csv'
-    model_save_path: str = '/workspace/checkpoints/loan'
+    train_path: str = '/workspace/data/icr/train.csv'
+    test_path: str = '/workspace/data/icr/test.csv'
+    greeks_path: str = '/workspace/data/icr/greeks.csv'
+    model_save_path: str = '/workspace/checkpoints/icr'
     
     # PTaRL Settings
-    use_ptarl: bool = True  # Enable PTaRL two-phase training
-    n_global_prototypes: int = None  # Number of global prototypes (default: ceil(log2(n_features)))
-    phase1_epochs: int = 25  # Epochs for Phase 1 (standard supervised)
-    phase2_epochs: int = 25  # Epochs for Phase 2 (space calibration)
+    use_ptarl: bool = True
+    n_global_prototypes: int = 6  # ceil(log2(54)) ≈ 6
+    phase1_epochs: int = 150  # Increased from 50
+    phase2_epochs: int = 150  # Increased from 50
     
-    # PTaRL Loss Weights
+    # PTaRL Loss Weights (per paper)
     ptarl_weights: Dict[str, float] = field(default_factory=lambda: {
         'task_weight': 1.0,
         'projection_weight': 0.25,
         'diversifying_weight': 0.25,
-        'orthogonalization_weight': 0.25
+        'orthogonalization_weight': 0.25,
+        'reconstruction_weight': 0.1
     })
-    
-    # Sinkhorn Distance Parameters
-    sinkhorn_eps: float = 0.1
-    sinkhorn_max_iter: int = 50
     
     # Device
     device: str = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -116,71 +99,10 @@ class ModelConfig:
         return [self.categorical_cardinalities[f] for f in self.categorical_features]
 
 
-# Prototype descriptions for explainability
-PROTOTYPE_DESCRIPTIONS = {
-    0: {
-        'ko': '고신용 전문가',
-        'en': 'High-Credit Professional',
-        'description_ko': '안정적인 고소득과 긴 신용 이력을 가진 우량 고객',
-        'description_en': 'Premium customer with stable high income and long credit history'
-    },
-    1: {
-        'ko': '안정적 주택 소유자',
-        'en': 'Stable Homeowner',
-        'description_ko': '주택담보대출을 보유한 중산층 고객',
-        'description_en': 'Middle-class customer with mortgage'
-    },
-    2: {
-        'ko': '젊은 임차인',
-        'en': 'Young Renter',
-        'description_ko': '짧은 근속기간과 임대 주거 형태의 젊은 고객',
-        'description_en': 'Young customer with short employment and renting'
-    },
-    3: {
-        'ko': '교육 투자자',
-        'en': 'Education Investor',
-        'description_ko': '교육 목적 대출을 받는 고객',
-        'description_en': 'Customer taking loan for education purposes'
-    },
-    4: {
-        'ko': '의료비 대출자',
-        'en': 'Medical Loan Applicant',
-        'description_ko': '의료 비용을 위한 대출 신청 고객',
-        'description_en': 'Customer applying for medical expense loan'
-    },
-    5: {
-        'ko': '창업 투자자',
-        'en': 'Venture Investor',
-        'description_ko': '사업 목적의 대출을 받는 고객',
-        'description_en': 'Customer taking loan for business venture'
-    },
-    6: {
-        'ko': '부채 통합자',
-        'en': 'Debt Consolidator',
-        'description_ko': '기존 부채를 통합하려는 고객',
-        'description_en': 'Customer consolidating existing debts'
-    },
-    7: {
-        'ko': '고위험 대출자',
-        'en': 'High-Risk Borrower',
-        'description_ko': '높은 부채비율과 과거 연체 이력이 있는 고객',
-        'description_en': 'Customer with high debt ratio and past default history'
-    },
-    8: {
-        'ko': '주택 개선 투자자',
-        'en': 'Home Improver',
-        'description_ko': '주택 개선 목적의 대출 고객',
-        'description_en': 'Customer taking loan for home improvement'
-    },
-    9: {
-        'ko': '개인 용도 대출자',
-        'en': 'Personal Loan Applicant',
-        'description_ko': '개인적 용도로 대출을 신청하는 고객',
-        'description_en': 'Customer applying for personal use loan'
-    }
-}
+def get_icr_config() -> ICRConfig:
+    """Returns the ICR configuration."""
+    return ICRConfig()
 
 
-def get_default_config() -> ModelConfig:
-    """Returns the default configuration."""
-    return ModelConfig()
+# Backward-compatible alias
+get_default_config = get_icr_config

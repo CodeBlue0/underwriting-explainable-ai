@@ -1,186 +1,275 @@
 #!/usr/bin/env python3
 """
-Main training script for Prototype-based Neuro-Symbolic Model.
+Training script for ICR (Identify Age-Related Conditions) dataset with PTaRL.
 
 Usage:
-    python train.py [--epochs 50] [--batch_size 256] [--lr 1e-3]
-    python train.py --phase 1  # Train Phase 1 only
-    python train.py --phase 2  # Train Phase 2 only (requires Phase 1 checkpoint)
+    Phase 1 (Representation Learning):
+        python train.py --phase 1
+    
+    Phase 2 (Prototype Learning):
+        python train.py --phase 2 --checkpoint /workspace/checkpoints/icr/best_model_phase1.pt
 """
 import argparse
 import os
 import sys
 import torch
 import numpy as np
-from pathlib import Path
+import pandas as pd
+from sklearn.model_selection import train_test_split
+from torch.utils.data import DataLoader, TensorDataset
 
 # Add src to path
-sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from src.config import ModelConfig, PROTOTYPE_DESCRIPTIONS, get_default_config
-from src.data.preprocessor import LoanDataPreprocessor, load_and_preprocess_data
-from src.data.dataset import create_data_loaders, create_test_loader
-from src.models.model import PrototypeNetwork, create_model_from_config
-from src.models.decoder import DecoderEvaluator
-from src.training.trainer import train_model, Trainer
-from src.explainability.prototype_explainer import PrototypeExplainer
-from src.explainability.report_generator import LoanDecisionReportGenerator
+from src.config import get_icr_config, ICRConfig
+from src.data.preprocessor import ICRPreprocessor
+from src.models.model import PrototypeNetwork
+from src.training.trainer import Trainer
 
+# Visualization imports
+from sklearn.manifold import TSNE
+import matplotlib.pyplot as plt
 
-def parse_args():
-    parser = argparse.ArgumentParser(description='Train Prototype Network for Loan Default Prediction')
+def plot_tsne(
+    embeddings_2d: np.ndarray,
+    labels: np.ndarray,
+    save_path: str,
+    title: str,
+    label_type: str = 'alpha'
+):
+    """
+    Plot t-SNE visualization (High Quality).
     
-    # Data paths
-    parser.add_argument('--train_path', type=str, default='/workspace/data/train.csv',
-                        help='Path to training data CSV')
-    parser.add_argument('--test_path', type=str, default='/workspace/data/test.csv',
-                        help='Path to test data CSV')
+    Args:
+        embeddings_2d: (N, 2) t-SNE coordinates
+        labels: (N,) Labels for coloring
+        save_path: Path to save the plot
+        title: Plot title
+        label_type: 'alpha' or 'class'
+    """
+    # Create plot
+    fig, ax = plt.subplots(figsize=(12, 10))
     
-    # Model architecture
-    parser.add_argument('--d_model', type=int, default=256,
-                        help='Hidden dimension for transformer')
-    parser.add_argument('--n_heads', type=int, default=8,
-                        help='Number of attention heads')
-    parser.add_argument('--n_layers', type=int, default=6,
-                        help='Number of transformer layers')
-    parser.add_argument('--n_prototypes', type=int, default=10,
-                        help='Number of prototype vectors')
+    if label_type == 'alpha':
+        # Color scheme for Alpha categories
+        colors = {
+            'A': '#2ecc71',  # Green - Class 0 (Normal)
+            'B': '#e74c3c',  # Red - Class 1 subtype B
+            'D': '#9b59b6',  # Purple - Class 1 subtype D
+            'G': '#f39c12',  # Orange - Class 1 subtype G
+        }
+        labels_display = {
+            'A': 'A (Class 0 - Normal)',
+            'B': 'B (Class 1 - Subtype B)',
+            'D': 'D (Class 1 - Subtype D)',
+            'G': 'G (Class 1 - Subtype G)',
+        }
+        unique_labels = ['A', 'B', 'D', 'G']
+        
+    else:  # 'class'
+        # Color scheme for Class
+        colors = {
+            0: '#2ecc71',  # Green - Class 0 (Normal)
+            1: '#e74c3c',  # Red - Class 1 (Age-related condition)
+        }
+        labels_display = {
+            0: 'Class 0 (Normal)',
+            1: 'Class 1 (Age-related condition)',
+        }
+        unique_labels = [0, 1]
     
-    # Training
-    parser.add_argument('--epochs', type=int, default=50,
-                        help='Number of training epochs')
-    parser.add_argument('--batch_size', type=int, default=256,
-                        help='Batch size for training')
-    parser.add_argument('--lr', type=float, default=1e-3,
-                        help='Learning rate')
-    parser.add_argument('--patience', type=int, default=10,
-                        help='Early stopping patience')
+    # Plot each category
+    for label in unique_labels:
+        mask = labels == label
+        if mask.sum() > 0:
+            ax.scatter(
+                embeddings_2d[mask, 0],
+                embeddings_2d[mask, 1],
+                c=colors[label],
+                label=f"{labels_display[label]} (n={mask.sum()})",
+                alpha=0.7,
+                s=50,
+                edgecolors='white',
+                linewidth=0.5
+            )
     
-    # Phase-specific training
-    parser.add_argument('--phase', type=int, choices=[1, 2], default=None,
-                        help='Train specific phase only (1 or 2). Default: train both phases.')
-    parser.add_argument('--checkpoint', type=str, default=None,
-                        help='Path to checkpoint to resume from (required for phase 2 only training)')
+    ax.set_title(title, fontsize=14, fontweight='bold')
+    ax.set_xlabel('t-SNE Dimension 1', fontsize=12)
+    ax.set_ylabel('t-SNE Dimension 2', fontsize=12)
+    ax.legend(loc='upper right', fontsize=10)
+    ax.grid(True, alpha=0.3)
     
-    # Loss weights
-    parser.add_argument('--lambda_recon', type=float, default=0.1,
-                        help='Weight for reconstruction loss')
-    parser.add_argument('--lambda_diversity', type=float, default=0.5,
-                        help='Weight for diversity loss')
-    parser.add_argument('--lambda_clustering', type=float, default=0.01,
-                        help='Weight for clustering loss')
-    
-    # Output
-    parser.add_argument('--save_dir', type=str, default='/workspace/checkpoints',
-                        help='Directory to save model checkpoints')
-    parser.add_argument('--seed', type=int, default=42,
-                        help='Random seed')
-    
-    # Quick test mode
-    parser.add_argument('--quick_test', action='store_true',
-                        help='Run quick test with 2 epochs on small subset')
-    
-    return parser.parse_args()
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    print(f"  Saved high-quality plot to: {save_path}")
+
 
 
 def set_seed(seed: int):
-    """Set random seeds for reproducibility."""
-    np.random.seed(seed)
+    """Set random seed for reproducibility."""
     torch.manual_seed(seed)
+    np.random.seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
 
 
+def create_dataloaders(
+    train_num: np.ndarray,
+    train_cat: np.ndarray,
+    train_target: np.ndarray,
+    batch_size: int,
+    val_split: float = 0.2,
+    seed: int = 42
+):
+    """Create train and validation DataLoaders."""
+    # Split data
+    indices = np.arange(len(train_target))
+    train_idx, val_idx = train_test_split(
+        indices, 
+        test_size=val_split, 
+        random_state=seed,
+        stratify=train_target
+    )
+    
+    # Create tensors
+    train_num_t = torch.FloatTensor(train_num[train_idx])
+    train_cat_t = torch.LongTensor(train_cat[train_idx])
+    train_target_t = torch.FloatTensor(train_target[train_idx])  # Float for BCE loss
+    
+    val_num_t = torch.FloatTensor(train_num[val_idx])
+    val_cat_t = torch.LongTensor(train_cat[val_idx])
+    val_target_t = torch.FloatTensor(train_target[val_idx])  # Float for BCE loss
+    
+    # Create datasets
+    train_dataset = TensorDataset(train_num_t, train_cat_t, train_target_t)
+    val_dataset = TensorDataset(val_num_t, val_cat_t, val_target_t)
+    
+    # Create dataloaders
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, drop_last=True)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+    
+    return train_loader, val_loader
+
+
+def create_model(config: ICRConfig, device: str):
+    """Create PrototypeNetwork model for ICR dataset."""
+    model = PrototypeNetwork(
+        n_numerical=config.n_numerical,
+        categorical_cardinalities=config.get_cardinality_list(),
+        d_model=config.d_model,
+        n_heads=config.n_heads,
+        n_layers=config.n_layers,
+        d_ffn=config.d_ffn,
+        dropout=config.dropout,
+        decoder_hidden_dim=config.decoder_hidden_dim,
+        n_global_prototypes=config.n_global_prototypes
+    ).to(device)
+    
+    return model
+
+
 def main():
-    args = parse_args()
-    set_seed(args.seed)
+    parser = argparse.ArgumentParser(description='Train PTaRL model on ICR dataset')
+    parser.add_argument('--phase', type=int, choices=[1, 2], required=True,
+                        help='Training phase: 1 (representation) or 2 (prototype)')
+    parser.add_argument('--checkpoint', type=str, default=None,
+                        help='Path to checkpoint (required for phase 2)')
+    parser.add_argument('--epochs', type=int, default=None,
+                        help='Override number of epochs')
+    parser.add_argument('--lr', type=float, default=None,
+                        help='Override learning rate')
+    args = parser.parse_args()
     
-    # Device
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    print(f"Using device: {device}")
-    
-    # Validate phase 2 requires checkpoint
+    # Validate arguments
     if args.phase == 2 and args.checkpoint is None:
-        print("ERROR: --phase 2 requires --checkpoint to load Phase 1 trained model")
-        sys.exit(1)
+        print("Warning: Phase 2 training without checkpoint. Starting from scratch.")
     
-    # Create config
-    config = get_default_config()
-    config.train_path = args.train_path
-    config.test_path = args.test_path
-    config.d_model = args.d_model
-    config.n_heads = args.n_heads
-    config.n_layers = args.n_layers
-    config.n_prototypes = args.n_prototypes
-    config.epochs = args.epochs if not args.quick_test else 2
-    config.batch_size = args.batch_size if not args.quick_test else 32
-    config.learning_rate = args.lr
-    config.early_stopping_patience = args.patience
-    config.lambda_reconstruction = args.lambda_recon
-    config.lambda_diversity = args.lambda_diversity
-    config.lambda_clustering = args.lambda_clustering
-    config.device = device
-    config.seed = args.seed
+    # Load config
+    config = get_icr_config()
     
-    # Create output directories
-    os.makedirs(args.save_dir, exist_ok=True)
+    # Override config values if provided
+    if args.epochs:
+        if args.phase == 1:
+            config.phase1_epochs = args.epochs
+        else:
+            config.phase2_epochs = args.epochs
+    if args.lr:
+        config.learning_rate = args.lr
     
-    print("\n" + "="*60)
-    print("PROTOTYPE-BASED NEURO-SYMBOLIC MODEL TRAINING")
-    print("="*60)
+    device = config.device
+    
+    print("=" * 60)
+    print("ICR Dataset - PTaRL Training")
+    print("=" * 60)
+    print(f"Phase: {args.phase}")
+    print(f"Device: {device}")
+    
+    # Set seed
+    set_seed(config.seed)
     
     # Load and preprocess data
-    print("\n[1/5] Loading and preprocessing data...")
-    (train_num, train_cat, train_target), (test_num, test_cat), preprocessor = \
-        load_and_preprocess_data(
-            config.train_path,
-            config.test_path,
-            config.numerical_features,
-            config.categorical_features
-        )
+    print("\n[1/5] Loading data...")
+    train_df = pd.read_csv(config.train_path)
     
-    # Update cardinalities from data
-    config.categorical_cardinalities = preprocessor.get_cardinalities()
+    # Load Greeks for Alpha labels
+    if os.path.exists(config.greeks_path):
+        greeks_df = pd.read_csv(config.greeks_path)
+        # Map Alpha based on Id
+        train_df['Alpha'] = train_df['Id'].map(greeks_df.set_index('Id')['Alpha'])
+        print(f"  Loaded Alpha labels from {config.greeks_path}")
+    else:
+        print(f"  Warning: Greeks file not found at {config.greeks_path}. Visualization will fail.")
+        # Create dummy for testing if needed or let it fail
+        train_df['Alpha'] = 'A'
+
+    print(f"  Samples: {len(train_df)}")
+    print(f"  Class distribution: {dict(train_df['Class'].value_counts())}")
     
-    print(f"  Training samples: {len(train_num)}")
-    print(f"  Test samples: {len(test_num)}")
-    print(f"  Numerical features: {config.n_numerical}")
-    print(f"  Categorical features: {config.n_categorical}")
-    print(f"  Cardinalities: {config.categorical_cardinalities}")
+    # Preprocess
+    print("\n[2/5] Preprocessing...")
+    preprocessor = ICRPreprocessor(
+        numerical_features=config.numerical_features,
+        categorical_features=config.categorical_features,
+        exclude_columns=config.exclude_columns
+    )
     
-    # Quick test: use subset
-    if args.quick_test:
-        print("\n  [Quick test mode - using 1000 samples]")
-        train_num = train_num[:1000]
-        train_cat = train_cat[:1000]
-        train_target = train_target[:1000]
+    train_num, train_cat = preprocessor.fit_transform(train_df)
+    train_target = train_df[config.target_column].values.astype(np.int64)
     
-    # Create data loaders
-    print("\n[2/5] Creating data loaders...")
-    train_loader, val_loader = create_data_loaders(
+    print(f"  Numerical features: {train_num.shape[1]}")
+    print(f"  Categorical features: {train_cat.shape[1]}")
+    
+    # Save preprocessor
+    preprocessor_path = os.path.join(config.model_save_path, 'preprocessor.pkl')
+    os.makedirs(config.model_save_path, exist_ok=True)
+    preprocessor.save(preprocessor_path)
+    print(f"  Saved preprocessor to: {preprocessor_path}")
+    
+    # Create dataloaders
+    print("\n[3/5] Creating dataloaders...")
+    train_loader, val_loader = create_dataloaders(
         train_num, train_cat, train_target,
         batch_size=config.batch_size,
-        val_split=0.1,
+        val_split=0.2,
         seed=config.seed
     )
     print(f"  Train batches: {len(train_loader)}")
     print(f"  Validation batches: {len(val_loader)}")
     
     # Create model
-    print("\n[3/5] Creating model...")
-    model = create_model_from_config(config)
+    print("\n[4/5] Creating model...")
+    model = create_model(config, device)
     
     # Load checkpoint if provided
     if args.checkpoint:
-        print(f"  Loading checkpoint from: {args.checkpoint}")
+        print(f"  Loading checkpoint: {args.checkpoint}")
         checkpoint = torch.load(args.checkpoint, map_location=device, weights_only=False)
-        # Use strict=False to handle deprecated keys from old checkpoints
-        # (e.g., prototype_layer, classifier were removed in refactoring)
         missing, unexpected = model.load_state_dict(checkpoint['model_state_dict'], strict=False)
         if unexpected:
-            print(f"  Note: Ignored deprecated keys: {unexpected}")
+            print(f"  Ignored deprecated keys: {len(unexpected)}")
         if args.phase == 2:
-            print("  Continuing to Phase 2 training...")
+            print("  Continuing to Phase 2...")
     
     # Count parameters
     total_params = sum(p.numel() for p in model.parameters())
@@ -188,86 +277,109 @@ def main():
     print(f"  Total parameters: {total_params:,}")
     print(f"  Trainable parameters: {trainable_params:,}")
     
-    # Model summary
-    print(f"\n  FT-Transformer Encoder:")
-    print(f"    - Hidden dim: {config.d_model}")
-    print(f"    - Attention heads: {config.n_heads}")
-    print(f"    - Transformer layers: {config.n_layers}")
-    print(f"\n  PTaRL Architecture:")
-    print(f"    - Global prototypes: {model.n_global_prototypes}")
-    
-    # Phase info
-    if args.phase:
-        print(f"\n  Training Phase: {args.phase} only")
-    else:
-        print(f"\n  Training Phases: 1 and 2 (full)")
-        print(f"    - Phase 1 epochs: {config.phase1_epochs}")
-        print(f"    - Phase 2 epochs: {config.phase2_epochs}")
-    
-    # Train
-    print("\n[4/5] Training model...")
-    print("-"*60)
-    
-    save_path = os.path.join(args.save_dir, 'best_model.pt')
-    model, history = train_model(
+    # Create trainer (using Trainer's expected signature)
+    print("\n[5/5] Training...")
+    trainer = Trainer(
         model=model,
         train_loader=train_loader,
         val_loader=val_loader,
         config=config,
-        save_path=save_path,
-        verbose=True,
-        phase=args.phase  # NEW: Pass phase for single-phase training
-    )
-    
-    print("-"*60)
-    print(f"\nBest Validation AUC: {max(history['val_auc']):.4f}")
-    
-    # Save preprocessor
-    preprocessor_path = os.path.join(args.save_dir, 'preprocessor.pkl')
-    preprocessor.save(preprocessor_path)
-    print(f"\nPreprocessor saved to: {preprocessor_path}")
-    print(f"Model saved to: {save_path}")
-    
-    # Evaluate decoder
-    print("\n[5/7] Evaluating decoder reconstruction...")
-    print("-"*60)
-    
-    feature_names = {
-        'numerical': config.numerical_features,
-        'categorical': config.categorical_features
-    }
-    decoder_evaluator = DecoderEvaluator(feature_names=feature_names)
-    decoder_metrics = decoder_evaluator.evaluate(model, val_loader, device=device)
-    decoder_evaluator.print_report(decoder_metrics)
-    
-    # Generate sample explanation
-    print("\n[6/7] Generating sample explanation...")
-    print("-"*60)
-    
-    explainer = PrototypeExplainer(
-        model=model,
-        preprocessor=preprocessor,
-        prototype_descriptions=PROTOTYPE_DESCRIPTIONS,
         device=device
     )
     
-    report_generator = LoanDecisionReportGenerator(explainer)
+    epochs = config.phase1_epochs if args.phase == 1 else config.phase2_epochs
+    print(f"  Epochs: {epochs}")
+    print(f"  Learning rate: {config.learning_rate}")
+    print(f"  Batch size: {config.batch_size}")
+    print()
     
-    # Explain first validation sample
-    sample_idx = 0
-    sample_num = train_num[sample_idx]
-    sample_cat = train_cat[sample_idx]
+    # Train the appropriate phase
+    if args.phase == 1:
+        trainer.train_phase(phase=1, epochs=epochs, early_stopping_patience=config.early_stopping_patience)
+        # Save Phase 1 checkpoint
+        checkpoint_path = os.path.join(config.model_save_path, 'best_model_phase1.pt')
+        trainer.save_checkpoint(checkpoint_path)
+        print(f"\n  Phase 1 checkpoint saved to: {checkpoint_path}")
+    else:
+        trainer.train_phase(phase=2, epochs=epochs, early_stopping_patience=config.early_stopping_patience)
+        # Save Phase 2 checkpoint
+        checkpoint_path = os.path.join(config.model_save_path, 'best_model_phase2.pt')
+        trainer.save_checkpoint(checkpoint_path)
+        print(f"\n  Phase 2 checkpoint saved to: {checkpoint_path}")
     
-    explanation = explainer.explain_single(sample_num, sample_cat, top_k=3)
-    report = report_generator.generate_report(explanation, applicant_id=f"SAMPLE-{sample_idx}")
+    print("\n" + "=" * 60)
+    print("Training Complete!")
+    print("=" * 60)
+    print(f"Checkpoints saved to: {config.model_save_path}")
     
-    print(report)
+    # Phase 2 specific: save prototype info
+    if args.phase == 2:
+        print("\nPrototype Information:")
+        print(f"  Number of prototypes: {config.n_global_prototypes}")
+        prototypes = model.global_prototype_layer.prototypes.detach().cpu().numpy()
+        print(f"  Prototype shape: {prototypes.shape}")
+
+    # ---------------------------------------------------------
+    # High-Quality Visualization (Post-Training)
+    # ---------------------------------------------------------
+    print("\n" + "=" * 60)
+    print("Generating High-Quality t-SNE Visualization")
+    print("=" * 60)
     
-    print("\n" + "="*60)
-    print("TRAINING COMPLETE")
-    print("="*60)
+    # Reload best model for visualization
+    final_checkpoint_path = os.path.join(config.model_save_path, f'best_model_phase{args.phase}.pt')
+    if os.path.exists(final_checkpoint_path):
+        print(f"Loading best model: {final_checkpoint_path}")
+        checkpoint = torch.load(final_checkpoint_path, map_location=device)
+        model.load_state_dict(checkpoint['model_state_dict'])
+        if args.phase == 2:
+            model.set_second_phase()
+        else:
+            model.set_first_phase()
     
-    return model, history, preprocessor, explainer
+    model.eval()
+    
+    print("Extracting embeddings for visualization...")
+    
+    # Create sequential loader for full dataset (ordered)
+    viz_dataset = TensorDataset(torch.FloatTensor(train_num), torch.LongTensor(train_cat))
+    viz_loader = DataLoader(viz_dataset, batch_size=config.batch_size, shuffle=False)
+    
+    embeddings_list = []
+    pspace_list = []
+    
+    with torch.no_grad():
+        for x_n, x_c in viz_loader:
+            x_n = x_n.to(device)
+            x_c = x_c.to(device)
+            outputs = model(x_n, x_c, return_all=True)
+            embeddings_list.append(outputs['z'].cpu().numpy())
+            if args.phase == 2:
+                pspace_list.append(outputs['p_space'].cpu().numpy())
+    
+    z = np.concatenate(embeddings_list, axis=0)
+    alpha_labels = train_df['Alpha'].fillna('A').values
+    class_labels = train_df['Class'].values
+    
+    # Visualizing Z-Space
+    print(f"Calculating t-SNE for Z-Space ({z.shape})...")
+    tsne = TSNE(n_components=2, perplexity=30, random_state=42)
+    z_2d = tsne.fit_transform(z)
+    
+    # plot_tsne(z_2d, alpha_labels, os.path.join(config.model_save_path, f'icr_tsne_phase{args.phase}_z_alpha.png'), f"Phase {args.phase} Z-Space (Alpha)", 'alpha')
+    # plot_tsne(z_2d, class_labels, os.path.join(config.model_save_path, f'icr_tsne_phase{args.phase}_z_class.png'), f"Phase {args.phase} Z-Space (Class)", 'class')
+    
+    # Visualizing P-Space (Phase 2 only)
+    if args.phase == 2:
+        p_space = np.concatenate(pspace_list, axis=0)
+        # print(f"Calculating t-SNE for P-Space ({p_space.shape})...")
+        # tsne = TSNE(n_components=2, perplexity=30, random_state=42)
+        # p_2d = tsne.fit_transform(p_space)
+        
+        # plot_tsne(p_2d, alpha_labels, os.path.join(config.model_save_path, f'icr_tsne_phase{args.phase}_pspace_alpha.png'), f"Phase {args.phase} P-Space (Alpha)", 'alpha')
+        # plot_tsne(p_2d, class_labels, os.path.join(config.model_save_path, f'icr_tsne_phase{args.phase}_pspace_class.png'), f"Phase {args.phase} P-Space (Class)", 'class')
+        
+    print(f"Visualization saved to: {config.model_save_path}")
 
 
 if __name__ == '__main__':

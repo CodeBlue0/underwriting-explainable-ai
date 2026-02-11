@@ -7,9 +7,9 @@ import numpy as np
 from typing import Tuple, Optional
 
 
-class LoanDataset(Dataset):
+class TabularDataset(Dataset):
     """
-    PyTorch Dataset for loan data.
+    PyTorch Dataset for tabular data (numerical + categorical features).
     """
     
     def __init__(
@@ -63,7 +63,7 @@ def create_data_loaders(
         train_loader, val_loader
     """
     # Create full dataset
-    full_dataset = LoanDataset(numerical_features, categorical_features, targets)
+    full_dataset = TabularDataset(numerical_features, categorical_features, targets)
     
     # Split into train and validation
     n_samples = len(full_dataset)
@@ -115,7 +115,7 @@ def create_test_loader(
     Returns:
         test_loader
     """
-    test_dataset = LoanDataset(numerical_features, categorical_features)
+    test_dataset = TabularDataset(numerical_features, categorical_features)
     
     test_loader = DataLoader(
         test_dataset,
