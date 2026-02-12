@@ -267,7 +267,7 @@ class Trainer:
             targets = targets.to(self.device)
             
             self.optimizer.zero_grad()
-            outputs = self.model(x_num, x_cat, return_all=True)
+            outputs = self.model(x_num, x_cat, return_all=False)
             
             losses = self.phase2_criterion(
                 outputs, targets,
@@ -314,6 +314,7 @@ class Trainer:
                     outputs, targets, x_num, x_cat
                 )
             else:
+                outputs = self.model(x_num, x_cat, return_all=False)
                 losses = self.phase2_criterion(
                     outputs, targets,
                     self.model.global_prototype_layer,

@@ -76,7 +76,7 @@ class ModelConfig:
         'projection_weight': 0.1,
         'diversifying_weight': 0.1,
         'orthogonalization_weight': 0.1,
-        'reconstruction_weight': 0.5
+        'reconstruction_weight': 0.0
     })
     
     # Sinkhorn Distance Parameters
